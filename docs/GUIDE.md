@@ -6,9 +6,9 @@ Compte environ 20 minutes. Les clés se collent à **un seul endroit** : les ré
 ---
 
 ## 1. GitHub : le dépôt
-1. Crée un dépôt **public** nommé `mon-coach` sur https://github.com/new, sans README.
-2. Envoie le code dans ce dépôt. C'est soit Claude qui le pousse (si tu as connecté GitHub à Claude), soit toi qui déposes le contenu du dossier `mon-coach` avec « Add file → Upload files ».
-3. Va dans **Settings → Pages**, puis, sous « Build and deployment », choisis **Source : GitHub Actions**.
+Le code est déjà dans `antoinehirs-crypto/mon-coach`. Il reste deux réglages à faire :
+1. **Settings → General**, tout en bas (« Danger Zone ») : **Change repository visibility → Public**. GitHub Pages n'est gratuit que pour un dépôt public. Le code ne contient aucune clé : elles restent dans les Secrets.
+2. **Settings → Pages**, puis, sous « Build and deployment » : **Source : GitHub Actions**.
 
 L'adresse de l'appli sera : `https://antoinehirs-crypto.github.io/mon-coach/`
 
