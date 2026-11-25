@@ -32,12 +32,13 @@ jobs:
         with:
           version: latest
       - name: Lier le projet
-        run: supabase link --project-ref "$REF" --password "$SUPABASE_DB_PASSWORD"
-      - name: Appliquer le schéma de base
+        run: supabase link --project-ref "$REF"
+      - name: Appliquer le schéma de base (si le mot de passe de la base est fourni)
+        if: ${{ env.SUPABASE_DB_PASSWORD != '' }}
         run: supabase db push --password "$SUPABASE_DB_PASSWORD"
       - name: Clés serveur (Strava, IA)
         env:
-          STRAVA_CLIENT_ID: ${{ secrets.STRAVA_CLIENT_ID }}
+          STRAVA_CLIENT_ID: ${{ vars.STRAVA_CLIENT_ID || secrets.STRAVA_CLIENT_ID }}
           STRAVA_CLIENT_SECRET: ${{ secrets.STRAVA_CLIENT_SECRET }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
