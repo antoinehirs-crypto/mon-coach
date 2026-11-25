@@ -1,5 +1,5 @@
 // Séances de course structurées, selon le terrain choisi (piste, nature, côtes, trail).
-// Échauffement, récupérations et retour au calme se terminent par un appui sur « Lap ».
+// Échauffement et retour au calme se terminent par un appui sur « Lap » ; les récups sont chronométrées.
 // Sortie : étapes lisibles + texte au format intervals.icu (synchronisé ensuite sur COROS / Garmin).
 
 const p2 = n => String(n).padStart(2, '0');
@@ -24,7 +24,7 @@ export function buildWorkout(o) {
   const wu = { label: 'Échauffement', kind: 'warmup', lap: true, hint: '15 min', cible: hr(.65, .75), icu: `- Press lap Échauffement 15m ${icuHr(.65, .75)} intensity=warmup` };
   const cd = { label: 'Retour au calme', kind: 'cooldown', lap: true, hint: '10 min', cible: hr(.6, .7), icu: `- Press lap Retour au calme 10m ${icuHr(.6, .7)} intensity=cooldown` };
   const body = Math.max(15, (o.min || 60) - 25);
-  const rec = (hint, why) => ({ label: 'Récup', kind: 'recovery', lap: true, hint, cible: why || 'trot très lent', icu: `- Press lap Récup ${hint.replace(/[^0-9ms]/g, '') || '2m'} ${icuHr(.6, .72)} intensity=recovery` });
+  const rec = (d, why) => { const t = (+(d.match(/(\d+)m/) || [0, 0])[1]) * 60 + (+(d.match(/(\d+)s/) || [0, 0])[1]); return { label: 'Récup', kind: 'recovery', time: t, cible: why || 'trot très lent', icu: `- Récup ${d} ${icuHr(.6, .72)} intensity=recovery` }; };
   let titre, n, rep, terrainNote;
 
   if (o.type !== 'qualite') {
@@ -37,13 +37,13 @@ export function buildWorkout(o) {
     if (beg || !s) {
       const pv = vma ? 3600 / vma : null; n = clamp(Math.floor(body * 60 / ((pv ? pv * .4 : 100) + 100)), 6, 12);
       titre = `Piste : ${n} × 400 m`; rep = { label: '400 m', kind: 'interval', dist: 400, cible: pv ? pace(pv * .98, pv * 1.03) + ' (VMA)' : 'vite mais régulier', icu: `- Rapide 400mtr ${pv ? pace(pv * .98, pv * 1.03) + ' Pace' : '90-95% HR'} intensity=interval` };
-      terrainNote = 'Un tour de piste au couloir 1 = 400 m. Récup : 200 m en trottinant, puis Lap.';
+      terrainNote = 'Un tour de piste au couloir 1 = 400 m. Récup : 1 min 30 en trottinant, la montre enchaîne seule.';
       return out(titre, [wu, { repeat: n, steps: [rep, rec('1m30s')] }, cd], terrainNote);
     }
     n = clamp(Math.floor(body * 60 / (s + 90)), 3, 8);
     titre = `Piste : ${n} × 1000 m au seuil`;
     rep = { label: '1000 m seuil', kind: 'interval', dist: 1000, cible: pace(s - 3, s + 5), icu: `- Seuil 1km ${pace(s - 3, s + 5)} Pace intensity=interval` };
-    terrainNote = '2,5 tours de piste par répétition. Récup : 200 m trottinés, puis Lap.';
+    terrainNote = '2,5 tours de piste par répétition. Récup : 1 min 30 en trottinant, la montre enchaîne seule.';
     return out(titre, [wu, { repeat: n, steps: [rep, rec('1m30s')] }, cd], terrainNote);
   }
 
@@ -51,7 +51,7 @@ export function buildWorkout(o) {
     n = clamp(Math.floor(body / 2.5), 6, 12);
     titre = `Côtes : ${n} × 45 s`;
     rep = { label: 'Montée 45 s', kind: 'interval', time: 45, cible: 'fort, ' + hr(.9, .95) + ', buste droit, petits pas', icu: `- Montée 45s ${icuHr(.9, .95)} intensity=interval` };
-    terrainNote = o.cote ? `Côte repérée sur le parcours au km ${o.cote.km} : ${o.cote.long} m à ${o.cote.pente} % de moyenne. Récup : redescends en trottinant, puis Lap.` : 'Cherche une côte de 5 à 8 % (150-250 m). Récup : redescends en trottinant, puis Lap.';
+    terrainNote = o.cote ? `Côte repérée sur le parcours au km ${o.cote.km} : ${o.cote.long} m à ${o.cote.pente} % de moyenne. Récup : 1 min 30 pour redescendre en trottinant.` : 'Cherche une côte de 5 à 8 % (150-250 m). Récup : 1 min 30 pour redescendre en trottinant.';
     return out(titre, [wu, { repeat: n, steps: [rep, rec('1m30s', 'descente en trottinant')] }, cd], terrainNote);
   }
 
@@ -67,7 +67,7 @@ export function buildWorkout(o) {
   n = clamp(Math.floor(body / 8), 2, 5);
   titre = `Nature : ${n} × 6 min au seuil`;
   rep = { label: '6 min seuil', kind: 'interval', time: 360, cible: s ? pace(s - 2, s + 8) + ' (ou ' + hr(.86, .91) + ')' : hr(.86, .91), icu: `- Seuil 6m ${s ? pace(s - 2, s + 8) + ' Pace' : icuHr(.86, .91)} intensity=interval` };
-  terrainNote = 'Sur chemin roulant et plat de préférence (allées, bords de l\'eau). Récup : 2 min de trot, puis Lap.';
+  terrainNote = 'Sur chemin roulant et plat de préférence (allées, bords de l\'eau). Récup : 2 min de trot.';
   return out(titre, [wu, { repeat: n, steps: [rep, rec('2m')] }, cd], terrainNote);
 }
 
@@ -78,6 +78,6 @@ function out(titre, steps, note) {
 
 /** Texte lisible des étapes (pour l'appli et pour recopier à la main dans COROS). */
 export function stepsText(w) {
-  const line = s => `${s.label} : ${s.lap ? 'jusqu\'à l\'appui sur Lap (~' + s.hint.replace(/^(\d+)m30s$/, '$1 min 30').replace(/^(\d+)m$/, '$1 min') + ')' : s.dist ? s.dist + ' m' : s.time >= 60 ? Math.round(s.time / 60) + ' min' : s.time + ' s'} · ${s.cible}`;
+  const line = s => `${s.label} : ${s.lap ? 'jusqu\'à l\'appui sur Lap (~' + s.hint.replace(/^(\d+)m30s$/, '$1 min 30').replace(/^(\d+)m$/, '$1 min') + ')' : s.dist ? s.dist + ' m' : s.time >= 60 ? Math.floor(s.time / 60) + ' min' + (s.time % 60 ? ' ' + s.time % 60 : '') : s.time + ' s'} · ${s.cible}`;
   return w.steps.map(s => s.repeat ? `${s.repeat} × [ ${s.steps.map(line).join(' ; ')} ]` : line(s)).join('\n');
 }

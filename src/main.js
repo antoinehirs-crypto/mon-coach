@@ -474,8 +474,8 @@ function runDialog(s, date) {
     <label>${type === 'qualite' ? 'Où veux-tu la faire ?' : 'Quel parcours ?'}</label>
     <div class="chips" id="rTer">${TERRAINS[type === 'qualite' ? 'qualite' : 'facile'].map(([k, l]) => `<button class="chip" data-t="${k}" aria-pressed="${k === rState.terrain}">${l}</button>`).join('')}</div>
     <div id="rMap" class="rmap"></div><p class="small" id="rInfo"></p>
-    <div class="row" style="gap:8px"><button class="btn sm" id="rOther">Autre parcours</button><button class="btn sm pri" id="rGpx" disabled>Parcours GPX pour COROS</button></div>
-    <p class="small mut" style="margin:6px 0 0">Dans l'appli COROS : Profil → Parcours → importer le fichier GPX (ou ouvre le fichier avec COROS).</p>
+    <div class="row" style="gap:8px"><button class="btn sm" id="rOther">Autre parcours</button><button class="btn sm pri" id="rGpx" disabled>Parcours GPX (COROS, Garmin)</button></div>
+    <p class="small mut" style="margin:6px 0 0">COROS : Profil → Parcours → importer le GPX. Garmin : Garmin Connect → Entraînement → Parcours → Importer.</p>
     <div id="rWk"></div>`;
   if (!$('#dlg').open) $('#dlg').showModal();
   $('#rTer').querySelectorAll('[data-t]').forEach(b => b.onclick = () => { rState.terrain = b.dataset.t; rState.seed = 0; $('#rTer').querySelectorAll('[data-t]').forEach(x => x.setAttribute('aria-pressed', x === b)); runRefresh(); });
@@ -542,21 +542,21 @@ async function drawWorkout() {
   if (!icuState) { try { icuState = await fn('intervals-push', { method: 'GET' }); } catch (e) { icuState = { configured: false, err: e.message }; } }
   const b = $('#icuBox'); if (!b) return;
   if (icuState.configured) {
-    b.innerHTML = `<button class="btn pri full" id="icuSend">Envoyer sur ma montre</button><p class="small mut" style="margin:6px 0 0">Via intervals.icu${icuState.athlete ? ' (' + esc(icuState.athlete) + ')' : ''}, qui la transmet à COROS. Elle apparaît ensuite dans l'appli COROS, à la date prévue. · <a href="#" id="icuOff">déconnecter</a></p>`;
+    b.innerHTML = `<button class="btn pri full" id="icuSend">Envoyer sur ma montre</button><p class="small mut" style="margin:6px 0 0">Via intervals.icu${icuState.athlete ? ' (' + esc(icuState.athlete) + ')' : ''}, qui la transmet à COROS ou Garmin Connect. Elle apparaît ensuite sur ta montre, à la date prévue. · <a href="#" id="icuOff">déconnecter</a></p>`;
     $('#icuSend').onclick = async () => {
       $('#icuSend').disabled = true;
-      try { await fn('intervals-push', { body: { date: dkey(rState.date), name: 'Mon Coach · ' + w.titre, description: w.icu, uid: 'moncoach-' + dkey(rState.date) + '-run' } }); toast('Séance envoyée. Synchronise l\'appli COROS pour la voir sur la montre.'); }
+      try { await fn('intervals-push', { body: { date: dkey(rState.date), name: 'Mon Coach · ' + w.titre, description: w.icu, uid: 'moncoach-' + dkey(rState.date) + '-run' } }); toast('Séance envoyée. Synchronise l\'appli COROS ou Garmin Connect pour la voir sur la montre.'); }
       catch (e) { toast('Envoi : ' + e.message); }
       $('#icuSend').disabled = false;
     };
     $('#icuOff').onclick = async e => { e.preventDefault(); await fn('intervals-push', { body: { action: 'forget' } }); icuState = null; drawWorkout(); };
   } else {
-    b.innerHTML = `<details open><summary class="small"><b>Relier ta montre COROS (une seule fois, gratuit)</b></summary><ol class="small" style="padding-left:18px">
+    b.innerHTML = `<details open><summary class="small"><b>Relier ta montre COROS ou Garmin (une seule fois, gratuit)</b></summary><ol class="small" style="padding-left:18px">
       <li>Crée un compte gratuit sur <a href="https://intervals.icu" target="_blank" rel="noopener">intervals.icu</a>.</li>
-      <li>Dans intervals.icu : <i>Settings → Connections → COROS</i> → Connect, et autorise l'envoi des séances.</li>
+      <li>Dans intervals.icu : <i>Settings → Connections</i> → COROS ou Garmin → Connect, et autorise l'envoi des séances (« upload workouts »).</li>
       <li>Dans intervals.icu : <i>Settings → Developer Settings</i> → copie ton <b>API key</b>, colle-la ci-dessous.</li></ol>
       <div class="row"><input id="icuKey" type="password" autocomplete="off" placeholder="Clé API intervals.icu" style="flex:1 1 180px"><button class="btn sm" id="icuSave">Relier</button></div></details>
-      <button class="btn full" id="icuCopy" style="margin-top:8px">Copier la séance (pour la créer à la main dans COROS)</button>`;
+      <button class="btn full" id="icuCopy" style="margin-top:8px">Copier la séance (pour la créer à la main)</button>`;
     $('#icuSave').onclick = async () => { try { $('#icuSave').disabled = true; await fn('intervals-push', { body: { action: 'save', key: $('#icuKey').value } }); icuState = null; toast('Montre reliée via intervals.icu.'); drawWorkout(); } catch (e) { toast(e.code === 'cle_refusee' ? 'Clé refusée par intervals.icu.' : 'Erreur : ' + e.message); $('#icuSave').disabled = false; } };
     $('#icuCopy').onclick = async () => { try { await navigator.clipboard.writeText(w.titre + '\n' + stepsText(w)); toast('Séance copiée.'); } catch (e) { toast('Copie impossible.'); } };
   }
