@@ -74,18 +74,37 @@ export function steepest(coords) {
   return best && best.pct >= 2.5 ? { at: coords[best.i], km: +best.km.toFixed(1), pente: +best.pct.toFixed(1), long: Math.round(best.len), gain: Math.round(best.gain), seg: coords.slice(best.i, best.j + 1) } : null;
 }
 
-/** Piste d'athlétisme la plus proche (5 km) et l'aller-retour depuis le domicile. */
+/** Piste d'athlétisme la plus proche (6 km) et l'aller-retour depuis le domicile. */
+async function tracksOverpass(home) {
+  const q = `[out:json][timeout:12];way["leisure"="track"](around:6000,${home.lat},${home.lon});out center tags;`;
+  for (const u of ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter']) {
+    try {
+      const ac = new AbortController(); const t = setTimeout(() => ac.abort(), 9000);
+      const r = await fetch(u, { method: 'POST', body: 'data=' + encodeURIComponent(q), signal: ac.signal }); clearTimeout(t);
+      if (!r.ok) continue;
+      return (await r.json()).elements.filter(e => e.center && (!e.tags?.sport || /athletics|running/.test(e.tags.sport))).map(e => ({ nom: e.tags?.name, p: [e.center.lon, e.center.lat] }));
+    } catch (e) { /* serveur suivant */ }
+  }
+  return null;
+}
+async function tracksNominatim(home) {
+  const vb = [home.lon - 0.08, home.lat + 0.055, home.lon + 0.08, home.lat - 0.055].join(',');
+  const out = [];
+  for (const q of ["piste d'athlétisme", 'stade']) {
+    const j = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=15&bounded=1&viewbox=${vb}&q=${encodeURIComponent(q)}`).then(r => r.json()).catch(() => []);
+    j.filter(x => x.class === 'leisure' && x.type === 'track').forEach(x => out.push({ nom: x.name, p: [+x.lon, +x.lat] }));
+  }
+  return out;
+}
 export async function trackRoute(home) {
-  const q = `[out:json][timeout:20];(way["leisure"="track"]["sport"~"athletics|running"](around:6000,${home.lat},${home.lon});way["leisure"="track"][!"sport"](around:6000,${home.lat},${home.lon}););out center 20;`;
-  const r = await fetch('https://overpass-api.de/api/interpreter', { method: 'POST', body: 'data=' + encodeURIComponent(q) });
-  if (!r.ok) throw new Error('recherche de piste impossible');
-  const els = (await r.json()).elements.filter(e => e.center);
-  if (!els.length) throw new Error('pas de piste d\'athlétisme trouvée à moins de 6 km');
   const h = [home.lon, home.lat];
-  els.sort((a, b) => dist(h, [a.center.lon, a.center.lat]) - dist(h, [b.center.lon, b.center.lat]));
-  const t = els[0], tp = [t.center.lon, t.center.lat];
-  const go = await brouter([h, tp], 'shortest');
-  return { nom: t.tags?.name || 'Piste d\'athlétisme', point: tp, coords: go.coords, km: go.km, dplus: go.dplus, allerRetour: true };
+  let els = await tracksOverpass(home);
+  if (!els || !els.length) els = await tracksNominatim(home);
+  if (!els.length) throw new Error('pas de piste d\'athlétisme trouvée à moins de 6 km');
+  els.sort((a, b) => dist(h, a.p) - dist(h, b.p));
+  const t = els[0];
+  const go = await brouter([h, t.p], 'shortest');
+  return { nom: t.nom && !/^piste d.athl/i.test(t.nom) ? t.nom : 'Piste d\'athlétisme', point: t.p, coords: go.coords, km: go.km, dplus: go.dplus, allerRetour: true };
 }
 
 export function gpx(name, coords) {
