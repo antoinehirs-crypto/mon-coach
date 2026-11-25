@@ -192,7 +192,7 @@ function drawHealth() {
   $('#hlTiles').innerHTML = t.map(([l, v, u]) => `<div><span class="mono">${esc(l)}</span><span class="v">${esc(v)}${u ? `<small>${esc(u)}</small>` : ''}</span></div>`).join('');
   let note = '';
   if (h?.hrv_ms && b) { const d = (h.hrv_ms - b) / b * 100; note = `VFC ${d >= 0 ? '+' : ''}${Math.round(d)} % vs ta moyenne 7 j. ` + (d < -12 ? 'Récupération incomplète : allège aujourd\'hui.' : d > 8 ? 'Bien récupéré.' : 'Dans ta normale.'); }
-  else if (!h) note = last ? 'Dernière donnée reçue le ' + new Date(last.date).toLocaleDateString('fr-FR') + '.' : 'Pas encore de données de sommeil automatiques : voir Profil → Sources. En attendant, le check-in suffit.';
+  else if (!h) note = last ? `Rien pour la nuit dernière dans Health Connect (dernière nuit reçue le ${new Date(last.date).toLocaleDateString('fr-FR')}${S.auto?.hc?.src?.sleep ? ', ' + S.auto.hc.src.sleep : ''}). Si tu portais une montre qui n'écrit pas son sommeil dans Health Connect, tape tes heures dans « Ressenti » : la forme s'en sert aussitôt.` : 'Pas encore de données de sommeil automatiques : voir Profil → Sources. En attendant, le check-in suffit.';
   const hc = S.auto?.hc, f = formeDuJour();
   const srcTxt = hc?.src && (hc.src.sleep || hc.src.hrv || hc.src.rhr) ? `Sources : sommeil ${hc.src.sleep || '–'} · VFC ${hc.src.hrv || '–'} · FC repos ${hc.src.rhr || '–'}. Lu il y a ${ago(hc.at)}.` : '';
   const why = f.parts.length ? '<div class="small" style="margin-top:8px">' + f.parts.map(p => `<div class="row sp"><span>${esc(p[0])} <span class="mut">${esc(p[2])}</span></span><b>${p[1]}</b></div>`).join('') + '</div>' : '';
