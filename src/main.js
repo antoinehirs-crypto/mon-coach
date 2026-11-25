@@ -778,7 +778,7 @@ function srcHTML() {
   const row = (c, ic, t, d, btn, more = '') => `<div class="src"><span class="ic" style="background:${c}">${ic}</span><div><b>${t}</b><div class="small mut">${d}</div></div>${btn}${more ? `<div class="more">${more}</div>` : ''}</div>`;
   const icsList = ics.map(u => `<div class="row sp small" style="margin-top:6px"><span>${esc(u.name)} · <span class="mut">${esc(u.url.replace(/^https?:\/\//, '').slice(0, 28))}…</span></span><button class="btn sm danger" data-rmics="${esc(u.id)}">Retirer</button></div>`).join('');
   const files = S.agenda?.files || [], nf = files.reduce((t, f) => t + f.evs.length, 0);
-  const agenda = row('#4f8ea3', '31', 'Agenda (cours, examens)', ics.length || files.length ? [ics.length ? `${ics.length} lien(s) · ${(cal?.evs || []).length} événements${cal?.at ? ' · lu il y a ' + ago(cal.at) : ''}` : '', files.length ? `${files.length} fichier(s) importé(s) · ${nf} événements` : ''].filter(Boolean).join(' · ') : 'Importe le fichier exporté de Google Agenda, ou colle un lien iCal (my.devinci, ADE, Outlook…).', `<button class="btn sm" data-a="addics">${ics.length || files.length ? 'Ajouter' : 'Connecter'}</button>`, icsList + (cal?.errs?.length ? `<p class="err">${esc(cal.errs.join(' · '))}</p>` : ''));
+  const agenda = row('#4f8ea3', '31', 'Agenda (cours, examens)', ics.length || files.length ? [ics.length ? `${ics.length} lien(s) · ${(cal?.evs || []).length} événements${cal?.at ? ' · lu il y a ' + ago(cal.at) : ''}` : '', files.length ? `${files.length} fichier(s) importé(s) · ${nf} événements` : ''].filter(Boolean).join(' · ') : 'Colle le lien iCal de Google Agenda (ou my.devinci, ADE, Outlook…) : il se met à jour tout seul.', `<button class="btn sm" data-a="addics">${ics.length || files.length ? 'Ajouter' : 'Connecter'}</button>`, icsList + (files.length && !ics.length ? '<p class="small" style="margin:6px 0 0">⚠️ Fichier importé = agenda figé. <a href="#" data-a="addics">Passe au lien Google Agenda</a> pour une mise à jour automatique.</p>' : '') + (cal?.errs?.length ? `<p class="err">${esc(cal.errs.join(' · '))}</p>` : ''));
   const st = row('#fc5200', 'S', 'Strava', strava?.connected ? `Connecté${strava.athlete?.firstname ? ' (' + esc(strava.athlete.firstname) + ')' : ''} · ${data?.n || 0} activités sur 6 semaines` : 'Toutes tes activités, quelle que soit ta montre (Garmin, COROS, Samsung, Apple…).', strava?.connected ? '<button class="btn sm" data-a="stravaoff">Déconnecter</button>' : '<button class="btn sm strava" data-a="strava">Connecter</button>');
   const h = health[0];
   const sleepBtn = isNative() ? '<button class="btn sm" data-a="health">Connecter</button>' : '<button class="btn sm" data-a="healthhow">Configurer</button>';
@@ -787,7 +787,7 @@ function srcHTML() {
 }
 function bindSrc(root) {
   const q = s => root.querySelector(s);
-  q('[data-a=addics]') && (q('[data-a=addics]').onclick = () => addIcsDialog());
+  root.querySelectorAll('[data-a=addics]').forEach(b => b.onclick = e => { e.preventDefault(); addIcsDialog(); });
   root.querySelectorAll('[data-rmics]').forEach(b => b.onclick = async () => { await save('sources', Object.assign({}, S.sources, { ics: (S.sources.ics || []).filter(x => x.id !== b.dataset.rmics) })); await syncCalendars(true); renderAll(); });
   q('[data-a=strava]') && (q('[data-a=strava]').onclick = () => connectStrava());
   q('[data-a=stravaoff]') && (q('[data-a=stravaoff]').onclick = async () => { await fn('strava-connect', { body: { action: 'disconnect' } }).catch(() => { }); await stravaStatus(); data = null; renderAll(); });
@@ -795,15 +795,16 @@ function bindSrc(root) {
   q('[data-a=healthhow]') && (q('[data-a=healthhow]').onclick = healthHowDialog);
 }
 function addIcsDialog(mode) {
-  mode = mode || 'file';
-  const tabs = `<div class="seg2"><button class="btn sm ${mode === 'file' ? 'pri' : ''}" data-im="file">Importer un fichier</button><button class="btn sm ${mode === 'url' ? 'pri' : ''}" data-im="url">Coller un lien</button></div>`;
+  mode = mode || 'url';
+  const tabs = `<div class="seg2"><button class="btn sm ${mode === 'url' ? 'pri' : ''}" data-im="url">Lien (mise à jour automatique)</button><button class="btn sm ${mode === 'file' ? 'pri' : ''}" data-im="file">Importer un fichier</button></div>`;
   const fileHTML = `<p class="small">Le plus simple avec Google Agenda : <b>Paramètres → Importer et exporter → Exporter</b>. Google télécharge un fichier <code>.zip</code> : choisis-le ici tel quel, sans le décompresser. Un fichier <code>.ics</code> marche aussi.</p>
    <label for="icF">Fichier .zip ou .ics</label><input id="icF" type="file" accept=".zip,.ics,text/calendar,application/zip">
-   <p class="small mut">Un fichier est une photo à l'instant T : refais l'import si tes cours changent. Pour une mise à jour automatique, utilise plutôt un lien.</p>`;
+   <p class="small mut">Un fichier est une photo à l'instant T : il ne se met pas à jour. Pour une mise à jour automatique, utilise plutôt « Lien ».</p>`;
   const urlHTML = `<label for="icN">Nom</label><input id="icN" placeholder="Ex : Cours ESILV" value="${(S.sources?.ics || []).length ? '' : 'Mon agenda'}">
    <label for="icU">Lien iCal (.ics)</label><input id="icU" placeholder="https://calendar.google.com/calendar/ical/…/basic.ics" inputmode="url">
    <div class="tip"><b>ESILV / De Vinci (le plus simple)</b> : sur my.devinci.fr, page d'accueil, bouton « Télécharger au format iCal » → copie le lien et colle-le ici.<br><br>
-   <b>Google Agenda</b>, seulement depuis un <b>ordinateur</b> (pas l'appli mobile) :<ol><li>calendar.google.com → roue ⚙️ → Paramètres</li><li>Dans la colonne de gauche, sous « Paramètres de mes agendas », clique sur le nom de ton agenda</li><li>Descends jusqu'à « Intégrer l'agenda » → copie l'<b>Adresse secrète au format iCal</b> (bouton copier à droite)</li></ol><span class="mut">Le lien reste privé : seul ton compte le lit.</span></div>`;
+   <b>Google Agenda</b> (mise à jour automatique, une fois pour toutes) :<ol><li><a href="https://calendar.google.com/calendar/u/0/r/settings" target="_blank" rel="noopener">Ouvre les paramètres de Google Agenda ↗</a> (sur téléphone : dans Chrome, menu ⋮ → « Version pour ordinateur » ; l'appli Google Agenda ne montre pas ce lien)</li><li>Dans la colonne de gauche, sous « Paramètres de mes agendas », touche le nom de ton agenda</li><li>Descends jusqu'à « Intégrer l'agenda » → copie l'<b>Adresse secrète au format iCal</b> (elle finit par <code>basic.ics</code>)</li><li>Colle-la ci-dessus. Un lien par agenda si tu en as plusieurs.</li></ol><span class="mut">Le lien reste privé : seul ton compte le lit. L'appli le relit à chaque ouverture (Google peut mettre quelques heures à publier un changement).</span></div>
+   ${(S.agenda?.files || []).length ? '<label class="row small" style="gap:8px;margin-top:10px"><input type="checkbox" id="icRepl" checked style="width:auto"> Retirer les fichiers importés à la main (le lien les remplace)</label>' : ''}`;
   $('#dlgBody').innerHTML = `<h3>Ajouter un agenda</h3>${tabs}${mode === 'file' ? fileHTML : urlHTML}<p class="err" id="icErr"></p>${mode === 'url' ? '<button class="btn pri full" id="icOk" style="margin-top:12px">Ajouter et lire</button>' : ''}
    ${(S.agenda?.files || []).length ? `<h3 style="margin-top:16px">Fichiers importés</h3>${S.agenda.files.map(f => `<div class="row sp small" style="margin-top:6px"><span>${esc(f.name)} · ${f.evs.length} événements · ${new Date(f.at).toLocaleDateString('fr-FR')}</span><button class="btn sm danger" data-rmf="${esc(f.id)}">Retirer</button></div>`).join('')}` : ''}`;
   if (!$('#dlg').open) $('#dlg').showModal();
@@ -835,6 +836,7 @@ function addIcsDialog(mode) {
     $('#icOk').disabled = true; $('#icErr').textContent = 'Lecture…';
     try { const r = await fn('calendar-fetch', { body: { url } }); const n = parseICS(r.ics).length;
       await save('sources', Object.assign({}, S.sources, { ics: [...(S.sources?.ics || []), { id: Date.now().toString(36), name: $('#icN').value.trim() || 'Agenda', url }] }));
+      if ($('#icRepl')?.checked) await save('agenda', Object.assign({}, S.agenda, { files: [] }));
       await syncCalendars(true); $('#dlg').close(); toast(n + ' événements trouvés.'); renderAll();
     } catch (e) { $('#icErr').textContent = 'Lecture impossible : ' + e.message; $('#icOk').disabled = false; }
   };
@@ -981,12 +983,15 @@ async function loadMeteo() { try { meteo = await getWeather(S.profile?.geo); } c
 async function autoSync(force) {
   if (syncing) return; syncing = true; drawPill(); loadMeteo();
   const STALE = 2 * 36e5, jobs = [];
-  if (force || !S.cal || Date.now() - S.cal.at > STALE) jobs.push(syncCalendars(true));
+  if (force || !S.cal || Date.now() - S.cal.at > 30 * 6e4) jobs.push(syncCalendars(true));
   if (strava?.connected && (force || !strava.last_sync || Date.now() - new Date(strava.last_sync).getTime() > STALE)) jobs.push(syncStrava(true));
   if (isNative()) jobs.push(nativeHealthSync(true));
   await Promise.allSettled(jobs); syncing = false; renderAll(); pushSummary();
 }
 $('#syncPill').onclick = () => autoSync(true);
+// Retour dans l'appli (onglet ou appli Android remise au premier plan) : relit agendas et Strava s'ils datent.
+let lastVis = Date.now();
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && user && Date.now() - lastVis > 10 * 6e4) { lastVis = Date.now(); autoSync(false); } });
 
 /* ---------- démarrage ---------- */
 async function boot() {
