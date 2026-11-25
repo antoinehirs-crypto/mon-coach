@@ -1,5 +1,6 @@
 import { sb, fn, configured } from './supa.js';
 import { parseICS, EXAM } from './ics.js';
+import { unzipSync, strFromU8 } from 'fflate';
 import { buildPlan, DAYS, tmin } from './planner.js';
 import { isNative, healthAvailable, connectHealth, syncHealth, openHealthSettings } from './health.js';
 
@@ -64,7 +65,7 @@ async function syncCalendars(silent) {
 }
 function allEvents() {
   const a = S.agenda || {}, seen = new Set();
-  return [...(a.manual || []), ...((S.cal && S.cal.evs) || [])].filter(e => { const k = e.s + '|' + e.t; if (seen.has(k)) return false; seen.add(k); return true; }).sort((x, y) => x.s - y.s);
+  return [...(a.manual || []), ...((a.files || []).flatMap(f => f.evs || [])), ...((S.cal && S.cal.evs) || [])].filter(e => { const k = e.s + '|' + e.t; if (seen.has(k)) return false; seen.add(k); return true; }).sort((x, y) => x.s - y.s);
 }
 const evsOn = (d, L) => { const k = dkey(d); return (L || allEvents()).filter(e => dkey(e.s) === k); };
 function dayInfo(d, L) {
@@ -471,7 +472,8 @@ function srcHTML() {
   const ics = S.sources?.ics || [], cal = S.cal;
   const row = (c, ic, t, d, btn, more = '') => `<div class="src"><span class="ic" style="background:${c}">${ic}</span><div><b>${t}</b><div class="small mut">${d}</div></div>${btn}${more ? `<div class="more">${more}</div>` : ''}</div>`;
   const icsList = ics.map(u => `<div class="row sp small" style="margin-top:6px"><span>${esc(u.name)} · <span class="mut">${esc(u.url.replace(/^https?:\/\//, '').slice(0, 28))}…</span></span><button class="btn sm danger" data-rmics="${esc(u.id)}">Retirer</button></div>`).join('');
-  const agenda = row('#4f8ea3', '31', 'Agenda (cours, examens)', ics.length ? `${ics.length} agenda(s) · ${(cal?.evs || []).length} événements${cal?.at ? ' · lu il y a ' + ago(cal.at) : ''}` : 'Colle le lien iCal de ton agenda : Google Agenda, my.devinci (ESILV), ADE, Outlook…', `<button class="btn sm" data-a="addics">${ics.length ? 'Ajouter' : 'Connecter'}</button>`, icsList + (cal?.errs?.length ? `<p class="err">${esc(cal.errs.join(' · '))}</p>` : ''));
+  const files = S.agenda?.files || [], nf = files.reduce((t, f) => t + f.evs.length, 0);
+  const agenda = row('#4f8ea3', '31', 'Agenda (cours, examens)', ics.length || files.length ? [ics.length ? `${ics.length} lien(s) · ${(cal?.evs || []).length} événements${cal?.at ? ' · lu il y a ' + ago(cal.at) : ''}` : '', files.length ? `${files.length} fichier(s) importé(s) · ${nf} événements` : ''].filter(Boolean).join(' · ') : 'Importe le fichier exporté de Google Agenda, ou colle un lien iCal (my.devinci, ADE, Outlook…).', `<button class="btn sm" data-a="addics">${ics.length || files.length ? 'Ajouter' : 'Connecter'}</button>`, icsList + (cal?.errs?.length ? `<p class="err">${esc(cal.errs.join(' · '))}</p>` : ''));
   const st = row('#fc5200', 'S', 'Strava', strava?.connected ? `Connecté${strava.athlete?.firstname ? ' (' + esc(strava.athlete.firstname) + ')' : ''} · ${data?.n || 0} activités sur 6 semaines` : 'Toutes tes activités, quelle que soit ta montre (Garmin, COROS, Samsung, Apple…).', strava?.connected ? '<button class="btn sm" data-a="stravaoff">Déconnecter</button>' : '<button class="btn sm strava" data-a="strava">Connecter</button>');
   const h = health[0];
   const sleepBtn = isNative() ? '<button class="btn sm" data-a="health">Connecter</button>' : '<button class="btn sm" data-a="healthhow">Configurer</button>';
@@ -480,21 +482,49 @@ function srcHTML() {
 }
 function bindSrc(root) {
   const q = s => root.querySelector(s);
-  q('[data-a=addics]') && (q('[data-a=addics]').onclick = addIcsDialog);
+  q('[data-a=addics]') && (q('[data-a=addics]').onclick = () => addIcsDialog());
   root.querySelectorAll('[data-rmics]').forEach(b => b.onclick = async () => { await save('sources', Object.assign({}, S.sources, { ics: (S.sources.ics || []).filter(x => x.id !== b.dataset.rmics) })); await syncCalendars(true); renderAll(); });
   q('[data-a=strava]') && (q('[data-a=strava]').onclick = connectStrava);
   q('[data-a=stravaoff]') && (q('[data-a=stravaoff]').onclick = async () => { await fn('strava-connect', { body: { action: 'disconnect' } }).catch(() => { }); await stravaStatus(); data = null; renderAll(); });
   q('[data-a=health]') && (q('[data-a=health]').onclick = async () => { await nativeHealthSync(false); renderAll(); });
   q('[data-a=healthhow]') && (q('[data-a=healthhow]').onclick = healthHowDialog);
 }
-function addIcsDialog() {
-  $('#dlgBody').innerHTML = `<h3>Ajouter un agenda</h3>
-   <label for="icN">Nom</label><input id="icN" placeholder="Ex : Cours ESILV" value="${(S.sources?.ics || []).length ? '' : 'Mon agenda'}">
+function addIcsDialog(mode) {
+  mode = mode || 'file';
+  const tabs = `<div class="seg2"><button class="btn sm ${mode === 'file' ? 'pri' : ''}" data-im="file">Importer un fichier</button><button class="btn sm ${mode === 'url' ? 'pri' : ''}" data-im="url">Coller un lien</button></div>`;
+  const fileHTML = `<p class="small">Le plus simple avec Google Agenda : <b>Paramètres → Importer et exporter → Exporter</b>. Google télécharge un fichier <code>.zip</code> : choisis-le ici tel quel, sans le décompresser. Un fichier <code>.ics</code> marche aussi.</p>
+   <label for="icF">Fichier .zip ou .ics</label><input id="icF" type="file" accept=".zip,.ics,text/calendar,application/zip">
+   <p class="small mut">Un fichier est une photo à l'instant T : refais l'import si tes cours changent. Pour une mise à jour automatique, utilise plutôt un lien.</p>`;
+  const urlHTML = `<label for="icN">Nom</label><input id="icN" placeholder="Ex : Cours ESILV" value="${(S.sources?.ics || []).length ? '' : 'Mon agenda'}">
    <label for="icU">Lien iCal (.ics)</label><input id="icU" placeholder="https://calendar.google.com/calendar/ical/…/basic.ics" inputmode="url">
-   <div class="tip"><b>Google Agenda</b> (sur ordinateur) :<ol><li>calendar.google.com → ⚙️ Paramètres</li><li>À gauche, clique sur ton agenda</li><li>« Intégrer l'agenda » → copie l'<b>adresse secrète au format iCal</b></li></ol>
-   <b>ESILV / De Vinci</b> : sur my.devinci.fr, copie le lien « Télécharger au format iCal » et colle-le ici directement.<br><span class="mut">Le lien reste privé : il n'est lu que par ton compte.</span></div>
-   <p class="err" id="icErr"></p><button class="btn pri full" id="icOk" style="margin-top:12px">Ajouter et lire</button>`;
-  $('#dlg').showModal();
+   <div class="tip"><b>ESILV / De Vinci (le plus simple)</b> : sur my.devinci.fr, page d'accueil, bouton « Télécharger au format iCal » → copie le lien et colle-le ici.<br><br>
+   <b>Google Agenda</b>, seulement depuis un <b>ordinateur</b> (pas l'appli mobile) :<ol><li>calendar.google.com → roue ⚙️ → Paramètres</li><li>Dans la colonne de gauche, sous « Paramètres de mes agendas », clique sur le nom de ton agenda</li><li>Descends jusqu'à « Intégrer l'agenda » → copie l'<b>Adresse secrète au format iCal</b> (bouton copier à droite)</li></ol><span class="mut">Le lien reste privé : seul ton compte le lit.</span></div>`;
+  $('#dlgBody').innerHTML = `<h3>Ajouter un agenda</h3>${tabs}${mode === 'file' ? fileHTML : urlHTML}<p class="err" id="icErr"></p>${mode === 'url' ? '<button class="btn pri full" id="icOk" style="margin-top:12px">Ajouter et lire</button>' : ''}
+   ${(S.agenda?.files || []).length ? `<h3 style="margin-top:16px">Fichiers importés</h3>${S.agenda.files.map(f => `<div class="row sp small" style="margin-top:6px"><span>${esc(f.name)} · ${f.evs.length} événements · ${new Date(f.at).toLocaleDateString('fr-FR')}</span><button class="btn sm danger" data-rmf="${esc(f.id)}">Retirer</button></div>`).join('')}` : ''}`;
+  if (!$('#dlg').open) $('#dlg').showModal();
+  $('#dlgBody').querySelectorAll('[data-im]').forEach(b => b.onclick = () => addIcsDialog(b.dataset.im));
+  $('#dlgBody').querySelectorAll('[data-rmf]').forEach(b => b.onclick = async () => { await save('agenda', Object.assign({}, S.agenda, { files: (S.agenda.files || []).filter(f => f.id !== b.dataset.rmf) })); renderAll(); addIcsDialog('file'); });
+  if (mode === 'file') {
+    $('#icF').onchange = async e => {
+      const f = e.target.files[0]; if (!f) return;
+      $('#icErr').textContent = 'Lecture…';
+      try {
+        let texts = [];
+        if (/\.zip$/i.test(f.name) || f.type.includes('zip')) {
+          const files = unzipSync(new Uint8Array(await f.arrayBuffer()));
+          texts = Object.entries(files).filter(([n]) => /\.ics$/i.test(n)).map(([n, d]) => [n.split('/').pop().replace(/\.ics$/i, ''), strFromU8(d)]);
+        } else texts = [[f.name.replace(/\.ics$/i, ''), await f.text()]];
+        if (!texts.length) throw new Error('aucun fichier .ics dans le .zip');
+        const add = texts.map(([n, t], i) => ({ id: Date.now().toString(36) + i, name: n.replace(/_/g, ' ').replace(/@.*$/, ''), at: Date.now(), evs: parseICS(t, 'file') })).filter(x => x.evs.length);
+        const total = add.reduce((t, x) => t + x.evs.length, 0);
+        if (!total) throw new Error('aucun événement dans les 10 prochaines semaines');
+        const names = new Set(add.map(x => x.name));
+        await save('agenda', Object.assign({ manual: [] }, S.agenda, { files: [...(S.agenda?.files || []).filter(x => !names.has(x.name)), ...add] }));
+        $('#dlg').close(); toast(total + ' événements importés (' + add.length + ' agenda' + (add.length > 1 ? 's' : '') + ').'); renderAll();
+      } catch (err) { $('#icErr').textContent = 'Import impossible : ' + err.message; }
+    };
+    return;
+  }
   $('#icOk').onclick = async () => {
     const url = $('#icU').value.trim(); if (!/^(https|webcal):\/\//i.test(url)) { $('#icErr').textContent = 'Colle un lien qui commence par https:// ou webcal://'; return; }
     $('#icOk').disabled = true; $('#icErr').textContent = 'Lecture…';
@@ -583,7 +613,7 @@ let lastPush = '';
 async function pushSummary() {
   if (!user) return;
   const p = S.profile || {}, L = loadStats(), pl = S.plan;
-  const summary = { niveau: p.niveau || '', objectif: p.objectif || '', date: p.date || '', heures: p.heures || '', prevu: pl ? planMin(pl) : 0, fait: pl ? doneMin(pl) : 0, planSemaine: pl?.semaine || '', forme: readiness(), h7: L ? +L.h7.toFixed(1) : null, tsb: L ? L.tsb : null, strava: !!strava?.connected, agenda: !!(S.sources?.ics || []).length, sommeil: !!health.length, creneaux: slots().length };
+  const summary = { niveau: p.niveau || '', objectif: p.objectif || '', date: p.date || '', heures: p.heures || '', prevu: pl ? planMin(pl) : 0, fait: pl ? doneMin(pl) : 0, planSemaine: pl?.semaine || '', forme: readiness(), h7: L ? +L.h7.toFixed(1) : null, tsb: L ? L.tsb : null, strava: !!strava?.connected, agenda: !!((S.sources?.ics || []).length || (S.agenda?.files || []).length), sommeil: !!health.length, creneaux: slots().length };
   const sig = JSON.stringify([p.prenom, p.sports, summary, today()]); if (sig === lastPush) return; lastPush = sig;
   await sb.from('profiles').update({ prenom: p.prenom || '', sports: p.sports || [], summary, last_seen: new Date().toISOString() }).eq('id', user.id);
 }
