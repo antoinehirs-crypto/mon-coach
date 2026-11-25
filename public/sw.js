@@ -1,9 +1,11 @@
 // Service worker minimal : l'appli reste ouvrable hors ligne (dernière version chargée).
-const C = 'mon-coach-v1';
+const C = 'mon-coach-v2';
 self.addEventListener('install', e => self.skipWaiting());
 self.addEventListener('activate', e => e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== C).map(k => caches.delete(k)))).then(() => self.clients.claim())));
 self.addEventListener('fetch', e => {
   const u = new URL(e.request.url);
   if (e.request.method !== 'GET' || u.origin !== location.origin) return; // jamais les appels Supabase/Strava
-  e.respondWith(fetch(e.request).then(r => { const c = r.clone(); caches.open(C).then(x => x.put(e.request, c)); return r; }).catch(() => caches.match(e.request).then(r => r || caches.match('./'))));
+  // page HTML : toujours la dernière version publiée (pas de cache HTTP de 10 min)
+  const go = e.request.mode === 'navigate' ? fetch(e.request.url, { cache: 'no-store', credentials: 'same-origin' }) : fetch(e.request);
+  e.respondWith(go.then(r => { const c = r.clone(); caches.open(C).then(x => x.put(e.request, c)); return r; }).catch(() => caches.match(e.request).then(r => r || caches.match('./'))));
 });

@@ -536,7 +536,7 @@ function homeBox() {
   const setHome = async home => { await save('profile', Object.assign({}, S.profile, { home })); runRefresh(); };
   const ed = $('#rHomeEd'); if (ed) ed.onclick = e => { e.preventDefault(); const p = Object.assign({}, S.profile); delete p.home; save('profile', p); runRefresh(); };
   const ok = $('#rAddrOk'); if (ok) ok.onclick = async () => { try { ok.disabled = true; await setHome(await geocode($('#rAddr').value)); } catch (e) { toast(e.message); ok.disabled = false; } };
-  const g = $('#rGeo'); if (g) g.onclick = e => { e.preventDefault(); navigator.geolocation?.getCurrentPosition(pos => setHome({ lat: +pos.coords.latitude.toFixed(5), lon: +pos.coords.longitude.toFixed(5), label: 'ma position' }), () => toast('Position refusée : tape ton adresse.')); };
+  const g = $('#rGeo'); if (g) g.onclick = e => { e.preventDefault(); navigator.geolocation?.getCurrentPosition(pos => setHome({ lat: +pos.coords.latitude.toFixed(5), lon: +pos.coords.longitude.toFixed(5), label: 'ma position' }), err => toast((err && err.code === 1 ? 'Position refusée' : 'Position introuvable') + ' : tape ton adresse à la place (ou mets à jour l\'appli Android).'), { enableHighAccuracy: true, timeout: 15000 }); };
   return h;
 }
 async function runRefresh() {

@@ -45,6 +45,9 @@ jobs:
           sed -i 's/minSdkVersion = [0-9]*/minSdkVersion = 26/' android/variables.gradle
           # Page de confidentialité affichée par Health Connect
           sed -i "s#</resources>#    <string name=\"health_connect_privacy_policy_url\">${APP_URL}privacy.html</string>\n</resources>#" android/app/src/main/res/values/strings.xml
+          # GPS (point de départ des parcours, météo) : permissions demandées par la WebView Capacitor
+          sed -i 's#<uses-permission android:name="android.permission.INTERNET" />#<uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />\n    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />\n    <uses-feature android:name="android.hardware.location.gps" android:required="false" />#' android/app/src/main/AndroidManifest.xml
+          grep -q ACCESS_FINE_LOCATION android/app/src/main/AndroidManifest.xml
           npx cap sync android
       - name: Clé de signature stable (facultative)
         env:
