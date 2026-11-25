@@ -6,6 +6,10 @@ import { isNative, healthAvailable, connectHealth, syncHealth, readExtras, openH
 import { computeAuto, AUTO_KEYS, SRC_LABEL } from './auto.js';
 import { getWeather } from './weather.js';
 import { propose } from './propose.js';
+import L_ from 'leaflet';
+import 'leaflet/dist/leaflet.css';
+import { geocode, loop, trackRoute, gpx } from './routes.js';
+import { buildWorkout, stepsText, TERRAINS } from './workout.js';
 
 const $ = s => document.querySelector(s);
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -411,8 +415,10 @@ function openSes(id) {
   const [i, k] = id.split('_').map(Number), p = S.plan, s = dayOf(p, i).seances[k], dn = (p.done || {})[id] || {};
   $('#dlgBody').innerHTML = `<h3>${esc(s.titre)}</h3><p class="mut small">${esc(DAYS[i])} · ${esc(s.duree_min)} min · ${esc(s.intensite)}</p><p style="white-space:pre-wrap">${esc(s.detail)}</p><p class="small mut">${esc(s.pourquoi)}</p>
   <label for="rpe">Ressenti (RPE 1 à 10)</label><input id="rpe" type="number" inputmode="numeric" min="1" max="10" value="${esc(dn.rpe || '')}"><label for="cm">Commentaire</label><textarea id="cm" rows="2">${esc(dn.cm || '')}</textarea>
+  ${s.sport === 'run' ? '<button class="btn full" id="sesRun" style="margin:4px 0 8px">Parcours et séance pour la montre</button>' : ''}
   <div class="row" style="margin-top:12px"><button class="btn pri" id="doneBtn">${dn.ok ? 'Mettre à jour' : 'Séance faite'}</button>${dn.ok ? '<button class="btn" id="undoBtn">Pas faite</button>' : ''}</div>`;
   $('#dlg').showModal();
+  const sr = $('#sesRun'); if (sr) sr.onclick = () => runDialog(s, addD(new Date(p.semaine + 'T12:00'), i));
   $('#doneBtn').onclick = async () => { p.done = p.done || {}; p.done[id] = { ok: true, rpe: $('#rpe').value, cm: $('#cm').value }; await save('plan', p); $('#dlg').close(); renderAll(); pushSummary(); };
   const u = $('#undoBtn'); if (u) u.onclick = async () => { delete p.done[id]; await save('plan', p); $('#dlg').close(); renderAll(); };
 }
@@ -436,10 +442,11 @@ function drawProps() {
     <div class="row sp" style="align-items:flex-start"><div><b>${i === 0 && o.sport !== 'repos' ? 'Conseillé · ' : ''}${esc(o.titre)}</b><div class="small mut">${o.duree_min ? esc(o.duree_min) + ' min · ' + esc(o.intensite) : 'Repos'}${o.quand ? ' · ' + esc(o.quand) : ''}${o.lieu ? ' · ' + esc(o.lieu) : ''}</div>${o.meteo ? `<div class="small mut">Météo : ${esc(o.meteo)}</div>` : ''}</div></div>
     <ul class="why">${(o.raisons || []).map(r => `<li>${esc(r)}</li>`).join('')}</ul>
     ${o.detail ? `<details><summary class="small">Voir la séance</summary><p style="white-space:pre-wrap;margin:6px 0 0">${esc(o.detail)}</p></details>` : ''}
-    ${o.sport !== 'repos' || o.titre === 'Repos complet' ? `<button class="btn sm${i === 0 ? ' pri' : ''}" data-pick="${i}" style="margin-top:8px">Choisir</button>` : ''}</div>`).join('');
+    <div class="row" style="margin-top:8px;gap:8px">${o.sport !== 'repos' || o.titre === 'Repos complet' ? `<button class="btn sm${i === 0 ? ' pri' : ''}" data-pick="${i}">Choisir</button>` : ''}${o.sport === 'run' ? `<button class="btn sm" data-run="${i}">Parcours et montre</button>` : ''}</div></div>`).join('');
   $('#propMeteo').innerHTML = meteo ? `Météo ${esc(meteo.nom)} (Open-Meteo). <a href="#" id="propGeo">Utiliser ma position</a>` : 'Météo indisponible pour le moment.';
   const g = $('#propGeo'); if (g) g.onclick = e => { e.preventDefault(); navigator.geolocation?.getCurrentPosition(async pos => { await save('profile', Object.assign({}, S.profile, { geo: { lat: +pos.coords.latitude.toFixed(3), lon: +pos.coords.longitude.toFixed(3), nom: 'ta position' } })); loadMeteo(); toast('Météo réglée sur ta position.'); }, () => toast('Position refusée : on garde Versailles.')); };
   document.querySelectorAll('[data-pick]').forEach(btn => btn.onclick = () => pickProp(+btn.dataset.pick, date));
+  document.querySelectorAll('[data-run]').forEach(btn => btn.onclick = () => runDialog(propRes.options[+btn.dataset.run], date));
 }
 document.querySelectorAll('#propDay [data-pd]').forEach(x => x.onclick = () => { propDay = +x.dataset.pd; drawProps(); });
 async function pickProp(i, date) {
@@ -455,6 +462,106 @@ async function pickProp(i, date) {
   await save('plan', p); renderAll(); pushSummary();
   toast(o.sport === 'repos' ? 'Repos noté dans ton plan.' : 'Séance ajoutée à ton plan' + (propDay ? ' de demain.' : ' du jour.'));
 }
+
+/* ---------- course : parcours depuis la maison + séance pour la montre ---------- */
+let rmap = null, rState = null;
+const runType = s => s.type || (/seuil|vma|fraction|côte|cote|fartlek|intermittent|piste/i.test((s.titre || '') + ' ' + (s.intensite || '')) || s.dur ? 'qualite' : /longue/i.test(s.titre || '') ? 'long' : 'facile');
+function runDialog(s, date) {
+  const type = runType(s);
+  rState = { s, date: new Date(date), type, terrain: type === 'qualite' ? 'nature' : 'route', seed: 0, route: null };
+  $('#dlgBody').innerHTML = `<h3>${esc(s.titre)}</h3><p class="small mut">${esc(new Date(date).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' }))} · ${esc(s.duree_min)} min</p>
+    <div id="rHome"></div>
+    <label>${type === 'qualite' ? 'Où veux-tu la faire ?' : 'Quel parcours ?'}</label>
+    <div class="chips" id="rTer">${TERRAINS[type === 'qualite' ? 'qualite' : 'facile'].map(([k, l]) => `<button class="chip" data-t="${k}" aria-pressed="${k === rState.terrain}">${l}</button>`).join('')}</div>
+    <div id="rMap" class="rmap"></div><p class="small" id="rInfo"></p>
+    <div class="row" style="gap:8px"><button class="btn sm" id="rOther">Autre parcours</button><button class="btn sm pri" id="rGpx" disabled>Parcours GPX pour COROS</button></div>
+    <p class="small mut" style="margin:6px 0 0">Dans l'appli COROS : Profil → Parcours → importer le fichier GPX (ou ouvre le fichier avec COROS).</p>
+    <div id="rWk"></div>`;
+  if (!$('#dlg').open) $('#dlg').showModal();
+  $('#rTer').querySelectorAll('[data-t]').forEach(b => b.onclick = () => { rState.terrain = b.dataset.t; rState.seed = 0; $('#rTer').querySelectorAll('[data-t]').forEach(x => x.setAttribute('aria-pressed', x === b)); runRefresh(); });
+  $('#rOther').onclick = () => { rState.seed++; runRefresh(); };
+  $('#rGpx').onclick = runGpx;
+  runRefresh();
+}
+function homeBox() {
+  const h = S.profile?.home;
+  $('#rHome').innerHTML = h ? `<p class="small">Départ et arrivée : <b>${esc(h.label)}</b> · <a href="#" id="rHomeEd">changer</a></p>` :
+    `<label for="rAddr">Ton domicile (départ et arrivée des parcours)</label><div class="row"><input id="rAddr" placeholder="Adresse, ex : 12 rue …, Versailles" style="flex:1 1 200px"><button class="btn sm" id="rAddrOk">OK</button></div><p class="small mut" style="margin:4px 0 0">Ou <a href="#" id="rGeo">utilise ta position actuelle</a>. Gardé dans ton compte privé.</p>`;
+  const setHome = async home => { await save('profile', Object.assign({}, S.profile, { home })); runRefresh(); };
+  const ed = $('#rHomeEd'); if (ed) ed.onclick = e => { e.preventDefault(); const p = Object.assign({}, S.profile); delete p.home; save('profile', p); runRefresh(); };
+  const ok = $('#rAddrOk'); if (ok) ok.onclick = async () => { try { ok.disabled = true; await setHome(await geocode($('#rAddr').value)); } catch (e) { toast(e.message); ok.disabled = false; } };
+  const g = $('#rGeo'); if (g) g.onclick = e => { e.preventDefault(); navigator.geolocation?.getCurrentPosition(pos => setHome({ lat: +pos.coords.latitude.toFixed(5), lon: +pos.coords.longitude.toFixed(5), label: 'ma position' }), () => toast('Position refusée : tape ton adresse.')); };
+  return h;
+}
+async function runRefresh() {
+  const st = rState, home = homeBox(), refs = effProfile().refs || {}, sp = (() => { const m = String(refs.seuil || '').match(/(\d+):(\d+)/); return m ? +m[1] * 60 + +m[2] : null; })();
+  const min = +st.s.duree_min || 45;
+  // séance structurée
+  const w = buildWorkout({ type: st.type, terrain: st.terrain, min, refs, niveau: S.profile?.niveau, cote: st.route?.cote });
+  st.w = w; drawWorkout();
+  $('#rGpx').disabled = true;
+  if (!home) { $('#rInfo').textContent = 'Indique ton domicile pour calculer un parcours.'; $('#rMap').hidden = true; return; }
+  $('#rMap').hidden = false; $('#rInfo').textContent = 'Calcul du parcours…';
+  const km = Math.max(3, Math.round(min * 60 / (st.type === 'qualite' ? (sp ? sp + 40 : 330) : (sp ? sp + 70 : 360)) * 10) / 10);
+  const my = st.terrain + st.seed;
+  try {
+    const r = st.terrain === 'piste' ? await trackRoute(home) : await loop(home, km, st.terrain, st.seed);
+    if (st.terrain + st.seed !== my || rState !== st) return;
+    if (r.allerRetour) { r.coords = r.coords.concat(r.coords.slice().reverse()); r.km *= 2; r.dplus *= 2; }
+    st.route = r;
+    if (st.terrain === 'cotes') { st.w = buildWorkout({ type: st.type, terrain: st.terrain, min, refs, niveau: S.profile?.niveau, cote: r.cote }); drawWorkout(); }
+    $('#rInfo').innerHTML = r.allerRetour ? `<b>${esc(r.nom)}</b> à ${(r.km / 2).toFixed(1)} km : l'aller sert d'échauffement, le retour de retour au calme. Total trajets ${r.km.toFixed(1)} km.` :
+      `Boucle de <b>${r.km.toFixed(1)} km</b>, ${Math.round(r.dplus)} m de D+${r.cote ? ` · plus belle côte au km ${r.cote.km} (${r.cote.long} m à ${r.cote.pente} %)` : ''}.`;
+    drawRunMap(home, r); $('#rGpx').disabled = false;
+  } catch (e) { $('#rInfo').textContent = 'Parcours : ' + e.message + '. Réessaie avec « Autre parcours ».'; }
+}
+function drawRunMap(home, r) {
+  if (rmap) { rmap.remove(); rmap = null; }
+  rmap = L_.map('rMap', { zoomControl: false, attributionControl: true });
+  L_.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18, attribution: '© OpenStreetMap' }).addTo(rmap);
+  const line = L_.polyline(r.coords.map(c => [c[1], c[0]]), { color: '#2f4a3a', weight: 4 }).addTo(rmap);
+  L_.circleMarker([home.lat, home.lon], { radius: 7, color: '#c4673f', fillOpacity: 1 }).addTo(rmap).bindTooltip('Maison');
+  if (r.point) L_.circleMarker([r.point[1], r.point[0]], { radius: 7, color: '#3b6ea8', fillOpacity: 1 }).addTo(rmap).bindTooltip(r.nom);
+  if (r.cote && rState.terrain === 'cotes') L_.polyline(r.cote.seg.map(c => [c[1], c[0]]), { color: '#c4673f', weight: 7 }).addTo(rmap).bindTooltip('Côte');
+  setTimeout(() => { rmap.invalidateSize(); rmap.fitBounds(line.getBounds(), { padding: [16, 16] }); }, 50);
+}
+async function runGpx() {
+  const st = rState, name = 'Mon Coach - ' + (st.w?.titre || st.s.titre), xml = gpx(name, st.route.coords);
+  const file = new File([xml], name.replace(/[^\w\- ]+/g, '').trim().replace(/ +/g, '_') + '.gpx', { type: 'application/gpx+xml' });
+  try { if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: name }); return; } } catch (e) { if (e.name === 'AbortError') return; }
+  const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = file.name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+  toast('GPX téléchargé : importe-le dans l\'appli COROS (Parcours).');
+}
+let icuState = null;
+async function drawWorkout() {
+  const w = rState.w, box = $('#rWk'); if (!box) return;
+  const isQ = rState.type === 'qualite';
+  box.innerHTML = `<h3 style="margin-top:16px">${esc(w.titre)}</h3><pre class="wk">${esc(stepsText(w))}</pre><p class="small mut">${esc(w.note || '')}</p>
+    ${isQ ? `<div id="icuBox"><p class="small mut">Chargement…</p></div>` : ''}`;
+  if (!isQ) return;
+  if (!icuState) { try { icuState = await fn('intervals-push', { method: 'GET' }); } catch (e) { icuState = { configured: false, err: e.message }; } }
+  const b = $('#icuBox'); if (!b) return;
+  if (icuState.configured) {
+    b.innerHTML = `<button class="btn pri full" id="icuSend">Envoyer sur ma montre</button><p class="small mut" style="margin:6px 0 0">Via intervals.icu${icuState.athlete ? ' (' + esc(icuState.athlete) + ')' : ''}, qui la transmet à COROS. Elle apparaît ensuite dans l'appli COROS, à la date prévue. · <a href="#" id="icuOff">déconnecter</a></p>`;
+    $('#icuSend').onclick = async () => {
+      $('#icuSend').disabled = true;
+      try { await fn('intervals-push', { body: { date: dkey(rState.date), name: 'Mon Coach · ' + w.titre, description: w.icu, uid: 'moncoach-' + dkey(rState.date) + '-run' } }); toast('Séance envoyée. Synchronise l\'appli COROS pour la voir sur la montre.'); }
+      catch (e) { toast('Envoi : ' + e.message); }
+      $('#icuSend').disabled = false;
+    };
+    $('#icuOff').onclick = async e => { e.preventDefault(); await fn('intervals-push', { body: { action: 'forget' } }); icuState = null; drawWorkout(); };
+  } else {
+    b.innerHTML = `<details open><summary class="small"><b>Relier ta montre COROS (une seule fois, gratuit)</b></summary><ol class="small" style="padding-left:18px">
+      <li>Crée un compte gratuit sur <a href="https://intervals.icu" target="_blank" rel="noopener">intervals.icu</a>.</li>
+      <li>Dans intervals.icu : <i>Settings → Connections → COROS</i> → Connect, et autorise l'envoi des séances.</li>
+      <li>Dans intervals.icu : <i>Settings → Developer Settings</i> → copie ton <b>API key</b>, colle-la ci-dessous.</li></ol>
+      <div class="row"><input id="icuKey" type="password" autocomplete="off" placeholder="Clé API intervals.icu" style="flex:1 1 180px"><button class="btn sm" id="icuSave">Relier</button></div></details>
+      <button class="btn full" id="icuCopy" style="margin-top:8px">Copier la séance (pour la créer à la main dans COROS)</button>`;
+    $('#icuSave').onclick = async () => { try { $('#icuSave').disabled = true; await fn('intervals-push', { body: { action: 'save', key: $('#icuKey').value } }); icuState = null; toast('Montre reliée via intervals.icu.'); drawWorkout(); } catch (e) { toast(e.code === 'cle_refusee' ? 'Clé refusée par intervals.icu.' : 'Erreur : ' + e.message); $('#icuSave').disabled = false; } };
+    $('#icuCopy').onclick = async () => { try { await navigator.clipboard.writeText(w.titre + '\n' + stepsText(w)); toast('Séance copiée.'); } catch (e) { toast('Copie impossible.'); } };
+  }
+}
+$('#dlg').addEventListener('close', () => { if (rmap) { rmap.remove(); rmap = null; } rState = null; });
 
 /* ---------- coach IA (facultatif) & bilan ---------- */
 const RULES = `Règles : polarisé 80/20 ; +10 % de volume max par semaine ; semaine allégée toutes les 3-4 semaines ; rien de dur le jour ou la veille d'un examen ; séances chiffrées (échauffement, corps avec zones/allures/watts, retour au calme, durée) ; adapté au niveau ; jamais d'avis médical.`;

@@ -12,7 +12,8 @@
     "@capacitor/core": "^8.0.0",
     "@capgo/capacitor-health": "^8.13.0",
     "@supabase/supabase-js": "^2.119.2",
-    "fflate": "^0.8.3"
+    "fflate": "^0.8.3",
+    "leaflet": "1.9"
   },
   "devDependencies": {
     "@capacitor/android": "^8.0.0",

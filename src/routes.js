@@ -1,0 +1,99 @@
+// Parcours de course gratuits, calculés sur OpenStreetMap :
+// - BRouter (brouter.de) pour les boucles depuis le domicile, avec le dénivelé ;
+// - Overpass pour trouver une piste d'athlétisme proche ;
+// - Nominatim pour retrouver une adresse.
+const BR = 'https://brouter.de/brouter';
+const R_EARTH = 6371000;
+
+const rad = d => d * Math.PI / 180, deg = r => r * 180 / Math.PI;
+export function dist(a, b) { // [lon, lat] -> mètres
+  const dLat = rad(b[1] - a[1]), dLon = rad(b[0] - a[0]);
+  const x = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a[1])) * Math.cos(rad(b[1])) * Math.sin(dLon / 2) ** 2;
+  return 2 * R_EARTH * Math.asin(Math.sqrt(x));
+}
+function dest([lon, lat], brg, m) {
+  const d = m / R_EARTH, b = rad(brg), f1 = rad(lat), l1 = rad(lon);
+  const f2 = Math.asin(Math.sin(f1) * Math.cos(d) + Math.cos(f1) * Math.sin(d) * Math.cos(b));
+  const l2 = l1 + Math.atan2(Math.sin(b) * Math.sin(d) * Math.cos(f1), Math.cos(d) - Math.sin(f1) * Math.sin(f2));
+  return [deg(l2), deg(f2)];
+}
+
+export async function geocode(q) {
+  const r = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=fr&q=' + encodeURIComponent(q));
+  const j = await r.json();
+  if (!j.length) throw new Error('adresse introuvable');
+  return { lat: +(+j[0].lat).toFixed(5), lon: +(+j[0].lon).toFixed(5), label: j[0].display_name.split(',').slice(0, 3).join(',') };
+}
+
+async function brouter(points, profile) {
+  const u = `${BR}?lonlats=${points.map(p => p[0].toFixed(5) + ',' + p[1].toFixed(5)).join('|')}&profile=${profile}&alternativeidx=0&format=geojson`;
+  const r = await fetch(u);
+  if (!r.ok) throw new Error('calcul du parcours impossible (' + r.status + ')');
+  const j = await r.json(), f = j.features[0];
+  return { coords: f.geometry.coordinates, km: +f.properties['track-length'] / 1000, dplus: +f.properties['filtered ascend'] || 0 };
+}
+
+const PROFILE = { route: 'shortest', nature: 'hiking-mountain', vallonne: 'hiking-mountain', trail: 'hiking-mountain', cotes: 'hiking-mountain', plat: 'shortest' };
+
+/** Boucle d'environ `km` km qui part et revient au domicile. */
+export async function loop(home, km, terrain = 'route', seed = 0) {
+  const h = [home.lon, home.lat], profile = PROFILE[terrain] || 'shortest';
+  const one = async brg => {
+    let R = km * 1000 / (2 * Math.PI) * 0.78, best = null;
+    for (let i = 0; i < 3; i++) {
+      const c = dest(h, brg, R), pts = [h, ...[-100, -10, 80].map(a => dest(c, brg + 180 + a, R)), h];
+      const r = await brouter(pts, profile);
+      if (!best || Math.abs(r.km - km) < Math.abs(best.km - km)) best = r;
+      if (Math.abs(r.km - km) / km < 0.08) break;
+      R *= km / r.km;
+    }
+    return Object.assign(best, { brg });
+  };
+  const base = (seed * 97) % 360;
+  const want = terrain === 'vallonne' || terrain === 'cotes' || terrain === 'trail' ? 2 : 1;
+  const cands = [];
+  for (let k = 0; k < want; k++) { try { cands.push(await one(base + k * 140)); } catch (e) { if (!cands.length && k === want - 1) throw e; } }
+  if (!cands.length) throw new Error('aucun parcours trouvé');
+  cands.sort((a, b) => (terrain === 'plat' || terrain === 'route' ? a.dplus / a.km - b.dplus / b.km : b.dplus / b.km - a.dplus / a.km));
+  const r = cands[0];
+  r.cote = steepest(r.coords);
+  return r;
+}
+
+/** Portion la plus raide (environ 200 à 500 m) : pour les côtes. */
+export function steepest(coords) {
+  if (!coords.length || coords[0].length < 3) return null;
+  const cum = [0]; for (let i = 1; i < coords.length; i++) cum.push(cum[i - 1] + dist(coords[i - 1], coords[i]));
+  let best = null;
+  for (let i = 0, j = 0; i < coords.length; i++) {
+    while (j < coords.length - 1 && cum[j] - cum[i] < 300) j++;
+    const len = cum[j] - cum[i]; if (len < 150) break;
+    const gain = coords[j][2] - coords[i][2], pct = gain / len * 100;
+    if (!best || pct > best.pct) best = { i, j, pct, len, gain, km: cum[i] / 1000 };
+  }
+  return best && best.pct >= 2.5 ? { at: coords[best.i], km: +best.km.toFixed(1), pente: +best.pct.toFixed(1), long: Math.round(best.len), gain: Math.round(best.gain), seg: coords.slice(best.i, best.j + 1) } : null;
+}
+
+/** Piste d'athlétisme la plus proche (5 km) et l'aller-retour depuis le domicile. */
+export async function trackRoute(home) {
+  const q = `[out:json][timeout:20];(way["leisure"="track"]["sport"~"athletics|running"](around:6000,${home.lat},${home.lon});way["leisure"="track"][!"sport"](around:6000,${home.lat},${home.lon}););out center 20;`;
+  const r = await fetch('https://overpass-api.de/api/interpreter', { method: 'POST', body: 'data=' + encodeURIComponent(q) });
+  if (!r.ok) throw new Error('recherche de piste impossible');
+  const els = (await r.json()).elements.filter(e => e.center);
+  if (!els.length) throw new Error('pas de piste d\'athlétisme trouvée à moins de 6 km');
+  const h = [home.lon, home.lat];
+  els.sort((a, b) => dist(h, [a.center.lon, a.center.lat]) - dist(h, [b.center.lon, b.center.lat]));
+  const t = els[0], tp = [t.center.lon, t.center.lat];
+  const go = await brouter([h, tp], 'shortest');
+  return { nom: t.tags?.name || 'Piste d\'athlétisme', point: tp, coords: go.coords, km: go.km, dplus: go.dplus, allerRetour: true };
+}
+
+export function gpx(name, coords) {
+  const esc = s => String(s).replace(/[<>&"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="Mon Coach" xmlns="http://www.topografix.com/GPX/1/1">
+<metadata><name>${esc(name)}</name></metadata>
+<trk><name>${esc(name)}</name><type>running</type><trkseg>
+${coords.map(c => `<trkpt lat="${c[1].toFixed(6)}" lon="${c[0].toFixed(6)}">${c[2] != null ? `<ele>${(+c[2]).toFixed(1)}</ele>` : ''}</trkpt>`).join('\n')}
+</trkseg></trk></gpx>`;
+}
