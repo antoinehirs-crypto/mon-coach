@@ -10,6 +10,8 @@
   },
   "dependencies": {
     "@capacitor/core": "^8.0.0",
+    "@capacitor/filesystem": "^8.1.5",
+    "@capacitor/share": "^8.0.3",
     "@capgo/capacitor-health": "^8.13.0",
     "@supabase/supabase-js": "^2.119.2",
     "fflate": "^0.8.3",

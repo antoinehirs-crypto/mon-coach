@@ -2,6 +2,7 @@ import { sb, fn, configured } from './supa.js';
 import { parseICS, EXAM } from './ics.js';
 import { unzipSync, strFromU8 } from 'fflate';
 import { buildPlan, DAYS, tmin } from './planner.js';
+import { makeSession } from './sessions.js';
 import { isNative, healthAvailable, connectHealth, syncHealth, readExtras, openHealthSettings } from './health.js';
 import { computeAuto, AUTO_KEYS, SRC_LABEL } from './auto.js';
 import { getWeather } from './weather.js';
@@ -10,6 +11,8 @@ import L_ from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { geocode, loop, trackRoute, gpx } from './routes.js';
 import { buildWorkout, stepsText, TERRAINS } from './workout.js';
+import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
+import { Share } from '@capacitor/share';
 
 const $ = s => document.querySelector(s);
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -413,7 +416,13 @@ function drawPlan() {
   document.querySelectorAll('.ses[role=button]').forEach(el => { el.onclick = () => openSes(el.dataset.id); el.onkeydown = e => { if (e.key === 'Enter') openSes(el.dataset.id); }; });
 }
 function openSes(id) {
-  const [i, k] = id.split('_').map(Number), p = S.plan, s = dayOf(p, i).seances[k], dn = (p.done || {})[id] || {};
+  const [i, k] = id.split('_').map(Number), p = S.plan, s0 = dayOf(p, i).seances[k], dn = (p.done || {})[id] || {};
+  // séance créée avant la bibliothèque chiffrée : on la reconstruit (même sport, même type, même durée)
+  let s = s0;
+  if (!s0.icu && !s0.fixe && ['run', 'bike', 'swim'].includes(s0.sport)) {
+    const ty = s0.type || (s0.dur ? 'qualite' : /longue/i.test(s0.titre || '') ? 'long' : 'facile');
+    s = Object.assign({}, makeSession(s0.sport, ty, +s0.duree_min || 45, effProfile().refs || {}, S.profile?.niveau || '', i), { quand: s0.quand, pourquoi: s0.pourquoi });
+  }
   const date = addD(new Date(p.semaine + 'T12:00'), i), ind = s.indoor;
   $('#dlgBody').innerHTML = `<h3>${esc(s.titre)}</h3><p class="mut small">${esc(DAYS[i])}${s.quand ? ' · <b>' + esc(s.quand) + '</b>' : ''} · ${esc(s.duree_min)} min · ${esc(s.intensite)}${s.lieu ? ' · ' + esc(s.lieu) : ''}</p>
   ${s.icu ? '<div id="sesWatch" style="margin-bottom:10px"></div>' : ''}
@@ -514,8 +523,11 @@ let rmap = null, rState = null;
 const runType = s => s.type || (/seuil|vma|fraction|côte|cote|fartlek|intermittent|piste/i.test((s.titre || '') + ' ' + (s.intensite || '')) || s.dur ? 'qualite' : /longue/i.test(s.titre || '') ? 'long' : 'facile');
 function runDialog(s, date) {
   const type = runType(s);
-  rState = { s, date: new Date(date), type, terrain: type === 'qualite' ? 'nature' : 'route', seed: 0, route: null };
+  rState = { s, date: new Date(date), type, terrain: type === 'qualite' ? 'nature' : 'route', seed: 0, route: null, src: S.profile?.routeSrc === 'strava' ? 'strava' : 'app' };
   $('#dlgBody').innerHTML = `<h3>${esc(s.titre)}</h3><p class="small mut">${esc(new Date(date).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' }))} · ${esc(s.duree_min)} min</p>
+    <label>Itinéraire</label>
+    <div class="seg" id="rSrc" role="group" style="grid-template-columns:1fr 1fr;margin-top:4px"><button data-src="app" aria-pressed="${rState.src === 'app'}">Généré par l'appli</button><button data-src="strava" aria-pressed="${rState.src === 'strava'}">Mes itinéraires Strava</button></div>
+    <div id="rStrava" hidden></div>
     <div id="rHome"></div>
     <label>${type === 'qualite' ? 'Où veux-tu la faire ?' : 'Quel parcours ?'}</label>
     <div class="chips" id="rTer">${TERRAINS[type === 'qualite' ? 'qualite' : 'facile'].map(([k, l]) => `<button class="chip" data-t="${k}" aria-pressed="${k === rState.terrain}">${l}</button>`).join('')}</div>
@@ -527,7 +539,50 @@ function runDialog(s, date) {
   $('#rTer').querySelectorAll('[data-t]').forEach(b => b.onclick = () => { rState.terrain = b.dataset.t; rState.seed = 0; $('#rTer').querySelectorAll('[data-t]').forEach(x => x.setAttribute('aria-pressed', x === b)); runRefresh(); });
   $('#rOther').onclick = () => { rState.seed++; runRefresh(); };
   $('#rGpx').onclick = runGpx;
+  $('#rSrc').querySelectorAll('[data-src]').forEach(b => b.onclick = () => {
+    rState.src = b.dataset.src; rState.route = null;
+    $('#rSrc').querySelectorAll('[data-src]').forEach(x => x.setAttribute('aria-pressed', x === b));
+    if ((S.profile?.routeSrc || 'app') !== rState.src) save('profile', Object.assign({}, S.profile, { routeSrc: rState.src }));
+    runRefresh();
+  });
   runRefresh();
+}
+/* Source Strava : l'API ne génère pas d'itinéraire, on lit ceux créés dans Strava (générateur d'itinéraires, abonnement). */
+let stravaRoutes = null;
+async function stravaRefresh() {
+  const st = rState, box = $('#rStrava'), min = +st.s.duree_min || 45;
+  const target = Math.max(3, Math.round(min / 5.8 * 10) / 10);
+  box.hidden = false; $('#rOther').hidden = true; $('#rMap').hidden = true; $('#rGpx').disabled = !st.route;
+  const head = `<p class="small" style="margin:6px 0">Strava crée de très bons itinéraires (abonnement Strava). Crée-le dans Strava, enregistre-le, puis choisis-le ici. Cible pour cette séance : ~${target} km.</p>
+    <a class="btn sm" href="https://www.strava.com/maps/create" target="_blank" rel="noopener">Créer un itinéraire sur Strava ↗</a> <button class="btn sm" id="rsReload">Actualiser</button>`;
+  if (!strava?.connected) { box.innerHTML = head + '<p class="small mut">Connecte d\'abord Strava (onglet Profil).</p>'; return; }
+  if (!stravaRoutes) {
+    box.innerHTML = head + '<p class="small mut">Lecture de tes itinéraires Strava…</p>';
+    try { stravaRoutes = (await fn('strava-routes', { method: 'GET' })).routes; } catch (e) { stravaRoutes = null; box.innerHTML = head + `<p class="small">Strava : ${esc(e.message)}</p>`; $('#rsReload').onclick = () => { stravaRoutes = null; stravaRefresh(); }; return; }
+    if (rState !== st || st.src !== 'strava') return;
+  }
+  const list = stravaRoutes.filter(r => r.type !== 'ride').sort((a, b) => Math.abs(a.km - target) - Math.abs(b.km - target));
+  box.innerHTML = head + (list.length ? `<div class="rlist">${list.slice(0, 12).map(r => `<button class="chip" data-rid="${esc(r.id)}" aria-pressed="${st.route?.sid === r.id}">${r.starred ? '★ ' : ''}${esc(r.name)} · ${r.km} km · ${r.dplus} m D+</button>`).join('')}</div>`
+    : `<p class="small mut">Aucun itinéraire de course trouvé dans ton compte Strava.</p>`) +
+    `<p class="small mut" style="margin:6px 0 0">Tes itinéraires privés n'apparaissent pas ? <a href="#" id="rsAll">Autorise Strava à les partager</a>.</p>`;
+  $('#rsReload').onclick = () => { stravaRoutes = null; stravaRefresh(); };
+  $('#rsAll').onclick = e => { e.preventDefault(); connectStrava(true); };
+  box.querySelectorAll('[data-rid]').forEach(b => b.onclick = async () => {
+    const meta = list.find(r => r.id === b.dataset.rid);
+    $('#rInfo').textContent = 'Chargement de l\'itinéraire Strava…';
+    try {
+      const { gpx: raw } = await fn('strava-routes', { body: { id: meta.id } });
+      const doc = new DOMParser().parseFromString(raw, 'application/xml');
+      const coords = [...doc.querySelectorAll('trkpt, rtept')].map(p => { const e = p.querySelector('ele'); return [+p.getAttribute('lon'), +p.getAttribute('lat'), e ? +e.textContent : null]; }).filter(c => isFinite(c[0]) && isFinite(c[1]));
+      if (coords.length < 2) throw new Error('itinéraire vide');
+      if (rState !== st || st.src !== 'strava') return;
+      st.route = { sid: meta.id, nom: meta.name, coords, km: meta.km, dplus: meta.dplus, raw, strava: true };
+      box.querySelectorAll('[data-rid]').forEach(x => x.setAttribute('aria-pressed', x === b));
+      $('#rInfo').innerHTML = `Itinéraire Strava <b>${esc(meta.name)}</b> : ${meta.km} km, ${meta.dplus} m de D+.`;
+      $('#rMap').hidden = false;
+      const s0 = coords[0]; drawRunMap(S.profile?.home || { lat: s0[1], lon: s0[0] }, st.route); $('#rGpx').disabled = false;
+    } catch (e) { $('#rInfo').textContent = 'Strava : ' + e.message; }
+  });
 }
 function homeBox() {
   const h = S.profile?.home;
@@ -545,6 +600,8 @@ async function runRefresh() {
   // séance structurée
   const w = buildWorkout({ type: st.type, terrain: st.terrain, min, refs, niveau: S.profile?.niveau, cote: st.route?.cote });
   st.w = w; drawWorkout();
+  if (st.src === 'strava') { $('#rHome').hidden = true; $('#rTer').previousElementSibling.hidden = st.type !== 'qualite'; $('#rTer').hidden = st.type !== 'qualite'; if (!st.route) $('#rInfo').textContent = ''; return stravaRefresh(); }
+  $('#rStrava').hidden = true; $('#rHome').hidden = false; $('#rOther').hidden = false; $('#rTer').hidden = false; $('#rTer').previousElementSibling.hidden = false;
   $('#rGpx').disabled = true;
   if (!home) { $('#rInfo').textContent = 'Indique ton domicile pour calculer un parcours.'; $('#rMap').hidden = true; return; }
   $('#rMap').hidden = false; $('#rInfo').textContent = 'Calcul du parcours…';
@@ -572,11 +629,27 @@ function drawRunMap(home, r) {
   setTimeout(() => { rmap.invalidateSize(); rmap.fitBounds(line.getBounds(), { padding: [16, 16] }); }, 50);
 }
 async function runGpx() {
-  const st = rState, name = 'Mon Coach - ' + (st.w?.titre || st.s.titre), xml = gpx(name, st.route.coords);
-  const file = new File([xml], name.replace(/[^\w\- ]+/g, '').trim().replace(/ +/g, '_') + '.gpx', { type: 'application/gpx+xml' });
-  try { if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: name }); return; } } catch (e) { if (e.name === 'AbortError') return; }
-  const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = file.name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
-  toast('GPX téléchargé : importe-le dans l\'appli COROS (Parcours).');
+  const st = rState; if (!st?.route) return;
+  const name = st.route.strava ? st.route.nom : 'Mon Coach - ' + (st.w?.titre || st.s.titre);
+  await shareFile(name.replace(/[^\w\- ]+/g, '').trim().replace(/ +/g, '_') + '.gpx', st.route.raw || gpx(name, st.route.coords), name);
+}
+/** Partage d'un fichier : feuille de partage Android (appli native), sinon partage ou téléchargement du navigateur. */
+async function shareFile(fname, text, title) {
+  if (isNative()) {
+    try {
+      const r = await Filesystem.writeFile({ path: fname, data: text, directory: Directory.Cache, encoding: Encoding.UTF8 });
+      await Share.share({ title, files: [r.uri], dialogTitle: 'Ouvrir avec COROS ou Garmin Connect' });
+      return;
+    } catch (e) {
+      if (/cancel/i.test(e.message || '')) return;
+      if (!/not implemented|unimplemented/i.test(e.message || '')) { toast('Partage : ' + e.message); return; }
+      toast('Mets à jour l\'appli Android pour envoyer le fichier directement.');
+    }
+  }
+  const file = new File([text], fname, { type: 'application/gpx+xml' });
+  try { if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title }); return; } } catch (e) { if (e.name === 'AbortError') return; }
+  const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = fname; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+  toast('GPX téléchargé : importe-le dans l\'appli COROS (Parcours) ou Garmin Connect.');
 }
 let icuState = null;
 /** Bloc « Envoyer sur ma montre » (intervals.icu → COROS / Garmin). w = { titre, icu, type, texte } */

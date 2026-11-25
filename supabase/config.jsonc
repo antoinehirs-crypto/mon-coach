@@ -471,7 +471,8 @@
     "calendar-fetch": { "verify_jwt": false },
     "health-ingest": { "verify_jwt": false },
     "coach-ai": { "verify_jwt": false },
-    "intervals-push": { "verify_jwt": false }
+    "intervals-push": { "verify_jwt": false },
+    "strava-routes": { "verify_jwt": false }
   },
 
   "analytics": {

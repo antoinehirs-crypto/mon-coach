@@ -49,11 +49,22 @@ jobs:
           sed -i 's#<uses-permission android:name="android.permission.INTERNET" />#<uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />\n    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />\n    <uses-feature android:name="android.hardware.location.gps" android:required="false" />#' android/app/src/main/AndroidManifest.xml
           grep -q ACCESS_FINE_LOCATION android/app/src/main/AndroidManifest.xml
           npx cap sync android
-      - name: Clé de signature stable (facultative)
+      # Clé de signature gardée d'un build à l'autre (cache privé du dépôt) : les mises à jour s'installent sans désinstaller.
+      - name: Clé de signature (cache)
+        id: ks
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: mon-coach-debug-keystore-v1
+      - name: Clé de signature stable
         env:
           KEYSTORE_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_B64 }}
         run: |
-          if [ -n "$KEYSTORE_B64" ]; then mkdir -p ~/.android && echo "$KEYSTORE_B64" | base64 -d > ~/.android/debug.keystore; fi
+          mkdir -p ~/.android
+          if [ -n "$KEYSTORE_B64" ]; then echo "$KEYSTORE_B64" | base64 -d > ~/.android/debug.keystore
+          elif [ ! -f ~/.android/debug.keystore ]; then
+            keytool -genkeypair -v -keystore ~/.android/debug.keystore -storepass android -keypass android -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          fi
       - name: Compiler l'APK
         working-directory: android
         run: ./gradlew assembleDebug --no-daemon
