@@ -46,6 +46,8 @@
   <p class="mut" id="helloS"></p>
   <div class="card coachnote" id="coachNote" hidden><span class="mono">Message de ton coach</span><div id="coachNoteTxt"></div></div>
   <div class="card"><span class="mono">Séances du jour</span><div id="todaySes"></div></div>
+  <div class="card" id="propCard"><div class="row sp"><span class="mono">Propositions de séance</span><div class="seg" id="propDay" role="group" aria-label="Jour" style="grid-template-columns:1fr 1fr;margin:0;min-width:190px"><button data-pd="0" aria-pressed="true">Aujourd'hui</button><button data-pd="1" aria-pressed="false">Demain</button></div></div>
+    <div id="propCtx" class="pctx"></div><div id="propList"></div><p class="small mut" id="propMeteo" style="margin:8px 0 0"></p></div>
   <div class="card"><div class="row sp"><span class="mono">Nuit et récupération</span><span class="badge n" id="hlBadge">Saisie</span></div><div class="tiles t4" id="hlTiles"></div><p class="small mut" id="hlNote" style="margin:8px 0 0"></p><div id="hlAct" style="margin-top:10px"></div></div>
   <div class="card"><div class="row sp"><span class="mono">Charge d'entraînement</span><span class="badge n">Estimé · Strava</span></div>
     <div class="tiles t4" id="loadTiles"></div><svg class="spark" id="spark" aria-label="Charge quotidienne sur 6 semaines"></svg>

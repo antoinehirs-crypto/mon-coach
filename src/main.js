@@ -4,6 +4,8 @@ import { unzipSync, strFromU8 } from 'fflate';
 import { buildPlan, DAYS, tmin } from './planner.js';
 import { isNative, healthAvailable, connectHealth, syncHealth, readExtras, openHealthSettings } from './health.js';
 import { computeAuto, AUTO_KEYS, SRC_LABEL } from './auto.js';
+import { getWeather } from './weather.js';
+import { propose } from './propose.js';
 
 const $ = s => document.querySelector(s);
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -14,7 +16,7 @@ const SPORTS = ['Course à pied', 'Trail', 'Triathlon', 'Vélo route', 'VTT / Gr
 document.querySelectorAll('[data-topo]').forEach(el => el.replaceWith($('#topoTpl').content.cloneNode(true)));
 
 let S = { profile: null, plan: null, checkin: null, agenda: null, cal: null, slots: null, conf: null, hist: null, sources: null, auto: null };
-let acts365 = [];
+let acts365 = [], meteo = null, propDay = 0, propRes = null;
 let user = null, me = null, data = null, health = [], strava = null, isAdmin = false, chat = [];
 
 /* ---------- dates ---------- */
@@ -416,6 +418,44 @@ function openSes(id) {
 }
 $('#dlgClose').onclick = () => $('#dlg').close();
 
+/* ---------- propositions de séance ---------- */
+const planDayOf = date => { const p = S.plan; if (!p || p.semaine !== dkey(monday(date))) return null; return dayOf(p, (new Date(date).getDay() + 6) % 7).seances || []; };
+function drawProps() {
+  if (!user || !$('#propList')) return;
+  const now = new Date(), date = addD(new Date(now.getFullYear(), now.getMonth(), now.getDate()), propDay), L = allEvents(), inf = dayInfo(date, L);
+  const off = monday(date) > monday(now) ? 1 : 0, h = propDay === 0 ? hToday() : null, b = hrvBase();
+  propRes = propose({
+    date, isToday: propDay === 0, nowMin: now.getHours() * 60 + now.getMinutes(), ev: inf.ev, fixed: weekStatus(off).filter(x => x.date === dkey(date)),
+    inf, planPrev: planDayOf(addD(date, -1)), planToday: planDayOf(date), planNext: planDayOf(addD(date, 1)), acts: acts365,
+    readiness: propDay === 0 ? readiness() : null, hrvDelta: h?.hrv_ms && b ? (h.hrv_ms - b) / b * 100 : null, tsb: loadStats()?.tsb ?? null,
+    profile: effProfile(), weather: meteo,
+  });
+  document.querySelectorAll('#propDay [data-pd]').forEach(x => x.setAttribute('aria-pressed', +x.dataset.pd === propDay));
+  $('#propCtx').innerHTML = propRes.contexte.map(t => `<span>${esc(t)}</span>`).join('');
+  $('#propList').innerHTML = propRes.options.map((o, i) => `<div class="prop ${['swim', 'bike', 'run', 'renfo', 'repos'].includes(o.sport) ? o.sport : ''}">
+    <div class="row sp" style="align-items:flex-start"><div><b>${i === 0 && o.sport !== 'repos' ? 'Conseillé · ' : ''}${esc(o.titre)}</b><div class="small mut">${o.duree_min ? esc(o.duree_min) + ' min · ' + esc(o.intensite) : 'Repos'}${o.quand ? ' · ' + esc(o.quand) : ''}${o.lieu ? ' · ' + esc(o.lieu) : ''}</div>${o.meteo ? `<div class="small mut">Météo : ${esc(o.meteo)}</div>` : ''}</div></div>
+    <ul class="why">${(o.raisons || []).map(r => `<li>${esc(r)}</li>`).join('')}</ul>
+    ${o.detail ? `<details><summary class="small">Voir la séance</summary><p style="white-space:pre-wrap;margin:6px 0 0">${esc(o.detail)}</p></details>` : ''}
+    ${o.sport !== 'repos' || o.titre === 'Repos complet' ? `<button class="btn sm${i === 0 ? ' pri' : ''}" data-pick="${i}" style="margin-top:8px">Choisir</button>` : ''}</div>`).join('');
+  $('#propMeteo').innerHTML = meteo ? `Météo ${esc(meteo.nom)} (Open-Meteo). <a href="#" id="propGeo">Utiliser ma position</a>` : 'Météo indisponible pour le moment.';
+  const g = $('#propGeo'); if (g) g.onclick = e => { e.preventDefault(); navigator.geolocation?.getCurrentPosition(async pos => { await save('profile', Object.assign({}, S.profile, { geo: { lat: +pos.coords.latitude.toFixed(3), lon: +pos.coords.longitude.toFixed(3), nom: 'ta position' } })); loadMeteo(); toast('Météo réglée sur ta position.'); }, () => toast('Position refusée : on garde Versailles.')); };
+  document.querySelectorAll('[data-pick]').forEach(btn => btn.onclick = () => pickProp(+btn.dataset.pick, date));
+}
+document.querySelectorAll('#propDay [data-pd]').forEach(x => x.onclick = () => { propDay = +x.dataset.pd; drawProps(); });
+async function pickProp(i, date) {
+  const o = propRes?.options[i]; if (!o) return;
+  const wk = dkey(monday(date)), di = (new Date(date).getDay() + 6) % 7;
+  let p = S.plan && S.plan.semaine === wk ? JSON.parse(JSON.stringify(S.plan)) : { semaine: wk, titre: 'Ma semaine', resume: 'Séances choisies au jour le jour.', jours: DAYS.map(d => ({ jour: d, seances: [] })), done: {}, source: 'propositions' };
+  const j = dayOf(p, di); if (!p.jours.includes(j)) p.jours[di] = j;
+  const keep = (j.seances || []).filter(s => s.fixe);
+  const s = { sport: o.sport, titre: o.titre, duree_min: o.duree_min, intensite: o.intensite, detail: o.detail + (o.quand ? `\nQuand : ${o.quand}${o.lieu ? ' · ' + o.lieu : ''}` : ''), pourquoi: (o.raisons || []).join(' · '), dur: o.dur, choisie: true };
+  j.seances = o.sport === 'repos' ? (keep.length ? keep : [Object.assign(s, { duree_min: 0 })]) : keep.concat(s);
+  // les coches « faite » de ce jour ne correspondent plus
+  Object.keys(p.done || {}).forEach(k => { if (k.startsWith(di + '_')) delete p.done[k]; });
+  await save('plan', p); renderAll(); pushSummary();
+  toast(o.sport === 'repos' ? 'Repos noté dans ton plan.' : 'Séance ajoutée à ton plan' + (propDay ? ' de demain.' : ' du jour.'));
+}
+
 /* ---------- coach IA (facultatif) & bilan ---------- */
 const RULES = `Règles : polarisé 80/20 ; +10 % de volume max par semaine ; semaine allégée toutes les 3-4 semaines ; rien de dur le jour ou la veille d'un examen ; séances chiffrées (échauffement, corps avec zones/allures/watts, retour au calme, durée) ; adapté au niveau ; jamais d'avis médical.`;
 async function ai(prompt) { const r = await fn('coach-ai', { body: { prompt } }); return r.text; }
@@ -706,10 +746,11 @@ function drawPill() {
   $('#syncTxt').textContent = syncing ? 'Synchro…' : !navigator.onLine ? 'Hors ligne' : t ? 'Synchro ' + ago(t) : 'À synchroniser';
 }
 function toast(m) { $('#ciMsg').textContent = ''; const el = document.createElement('div'); el.textContent = m; el.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:calc(84px + env(safe-area-inset-bottom,0px));background:#1d2422;color:#f3eee4;padding:10px 16px;border-radius:10px;z-index:50;max-width:90vw;font-size:14px;box-shadow:0 4px 16px rgba(0,0,0,.2)'; document.body.appendChild(el); setTimeout(() => el.remove(), 4500); }
-function renderAll() { drawAgendaCal(); drawAgendaList(); drawProfile(); drawSources(); drawCheckin(); drawRing(); drawHealth(); drawBars(); drawPlan(); drawToday(); drawLoad(); drawLast(); drawPill(); drawAccess(); refreshOnbSrc(); }
+function renderAll() { drawProps(); drawAgendaCal(); drawAgendaList(); drawProfile(); drawSources(); drawCheckin(); drawRing(); drawHealth(); drawBars(); drawPlan(); drawToday(); drawLoad(); drawLast(); drawPill(); drawAccess(); refreshOnbSrc(); }
 
+async function loadMeteo() { try { meteo = await getWeather(S.profile?.geo); } catch (e) { meteo = null; } drawProps(); }
 async function autoSync(force) {
-  if (syncing) return; syncing = true; drawPill();
+  if (syncing) return; syncing = true; drawPill(); loadMeteo();
   const STALE = 2 * 36e5, jobs = [];
   if (force || !S.cal || Date.now() - S.cal.at > STALE) jobs.push(syncCalendars(true));
   if (strava?.connected && (force || !strava.last_sync || Date.now() - new Date(strava.last_sync).getTime() > STALE)) jobs.push(syncStrava(true));

@@ -5,7 +5,7 @@
 
 export const DAYS = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche'];
 
-const disciplinesOf = (sports = []) => {
+export const disciplinesOf = (sports = []) => {
   const s = new Set();
   sports.forEach(x => {
     if (/Triathlon/.test(x)) { s.add('swim'); s.add('bike'); s.add('run'); }
@@ -19,7 +19,7 @@ const disciplinesOf = (sports = []) => {
   return [...s];
 };
 
-function zonesText(p) {
+export function zonesText(p) {
   const r = p.refs || {};
   const fc = +r.fcmax || null;
   const z = (a, b) => fc ? ` (${Math.round(fc * a)}-${Math.round(fc * b)} bpm)` : '';
@@ -31,7 +31,7 @@ function zonesText(p) {
   };
 }
 
-function session(kind, type, min, Z, lvl) {
+export function session(kind, type, min, Z, lvl) {
   const wu = Math.min(20, Math.max(10, Math.round(min * .2))), cd = Math.min(15, Math.max(5, Math.round(min * .12)));
   const body = Math.max(10, min - wu - cd);
   const L = (a, b, c) => `Échauffement : ${a}\nCorps : ${b}\nRetour au calme : ${c}\nDurée totale : ${min} min`;
