@@ -20,8 +20,8 @@ Deno.serve(async (req) => {
     u.searchParams.set('client_id', clientId);
     u.searchParams.set('response_type', 'code');
     u.searchParams.set('redirect_uri', redirect);
-    u.searchParams.set('approval_prompt', 'auto');
-    u.searchParams.set('scope', 'read,activity:read_all');
+    u.searchParams.set('approval_prompt', url.searchParams.get('force') ? 'force' : 'auto');
+    u.searchParams.set('scope', 'read,activity:read_all,profile:read_all');
     u.searchParams.set('state', 'strava');
     return json({ url: u.toString() });
   }

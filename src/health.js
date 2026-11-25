@@ -7,6 +7,7 @@ import { sb } from './supa.js';
 
 export const isNative = () => Capacitor.isNativePlatform();
 const TYPES = ['sleep', 'heartRateVariability', 'restingHeartRate'];
+const EXTRA = ['weight', 'vo2Max'];
 const dkey = d => { d = new Date(d); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
 
 export async function healthAvailable() {
@@ -15,11 +16,20 @@ export async function healthAvailable() {
 }
 
 export async function connectHealth() {
-  const st = await Health.requestAuthorization({ read: TYPES });
+  const st = await Health.requestAuthorization({ read: [...TYPES, ...EXTRA] });
   return st;
 }
 
 export const openHealthSettings = () => Health.openHealthConnectSettings().catch(() => {});
+
+/** Dernière valeur de poids et de VO2max (6 mois). */
+export async function readExtras() {
+  const end = new Date(), start = new Date(Date.now() - 180 * 864e5);
+  const last = async t => { try { const r = await Health.readSamples({ dataType: t, startDate: start.toISOString(), endDate: end.toISOString(), limit: 500 }); const s = (r.samples || []).filter(x => x.value).sort((a, b) => new Date(b.endDate || b.startDate) - new Date(a.endDate || a.startDate))[0]; return s ? { v: s.value, at: s.endDate || s.startDate } : null; } catch (e) { return null; } };
+  const [w, v] = await Promise.all(EXTRA.map(last));
+  const o = {}; if (w) { o.weight = w.v; o.weight_at = w.at; } if (v) { o.vo2max = v.v; o.vo2max_at = v.at; }
+  return o;
+}
 
 /** Lit les 14 dernières nuits et les enregistre dans health_daily. */
 export async function syncHealth(userId, days = 14) {

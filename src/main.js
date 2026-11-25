@@ -2,7 +2,8 @@ import { sb, fn, configured } from './supa.js';
 import { parseICS, EXAM } from './ics.js';
 import { unzipSync, strFromU8 } from 'fflate';
 import { buildPlan, DAYS, tmin } from './planner.js';
-import { isNative, healthAvailable, connectHealth, syncHealth, openHealthSettings } from './health.js';
+import { isNative, healthAvailable, connectHealth, syncHealth, readExtras, openHealthSettings } from './health.js';
+import { computeAuto, AUTO_KEYS, SRC_LABEL } from './auto.js';
 
 const $ = s => document.querySelector(s);
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -12,7 +13,8 @@ const FN_BASE = (import.meta.env.VITE_SUPABASE_URL || '') + '/functions/v1/healt
 const SPORTS = ['Course à pied', 'Trail', 'Triathlon', 'Vélo route', 'VTT / Gravel', 'Natation', 'Musculation', 'CrossFit / Hyrox', 'Football', 'Basket', 'Rugby', 'Handball', 'Volley', 'Tennis / Padel', 'Badminton', 'Escalade', 'Ski / Ski de fond', 'Aviron', 'Boxe / Combat', 'Danse', 'Randonnée / Marche', 'Autre'];
 document.querySelectorAll('[data-topo]').forEach(el => el.replaceWith($('#topoTpl').content.cloneNode(true)));
 
-let S = { profile: null, plan: null, checkin: null, agenda: null, cal: null, slots: null, conf: null, hist: null, sources: null };
+let S = { profile: null, plan: null, checkin: null, agenda: null, cal: null, slots: null, conf: null, hist: null, sources: null, auto: null };
+let acts365 = [];
 let user = null, me = null, data = null, health = [], strava = null, isAdmin = false, chat = [];
 
 /* ---------- dates ---------- */
@@ -93,6 +95,8 @@ $('#ctAdd').onclick = async () => {
 /* ---------- Strava ---------- */
 const grp = t => /Swim/.test(t) ? 'swim' : /Ride|Bike|Cycl/.test(t) ? 'bike' : /Run|Trail/.test(t) ? 'run' : 'oth';
 async function loadActivities() {
+  const { data: all } = await sb.from('activities').select('id,name,sport_type,start_local,distance,moving_time,avg_speed,avg_hr,max_hr').gte('start_date', addD(new Date(), -366).toISOString()).order('start_date', { ascending: false }).limit(1500);
+  acts365 = all || [];
   const start = addD(monday(new Date()), -42);
   const { data: acts } = await sb.from('activities').select('*').gte('start_date', start.toISOString()).order('start_date', { ascending: false }).limit(400);
   if (!acts || !acts.length) { data = null; return; }
@@ -111,11 +115,11 @@ async function loadActivities() {
 async function stravaStatus() { try { strava = await fn('strava-connect', { method: 'GET' }); } catch (e) { strava = { connected: false, error: e.message }; } }
 async function syncStrava(silent) {
   if (!strava?.connected) return;
-  try { const r = await fn('strava-sync', { body: { days: 42 } }); await loadActivities(); await stravaStatus(); if (!silent) toast(r.count + ' activités lues sur Strava.'); }
+  try { const r = await fn('strava-sync', { body: {} }); await loadActivities(); await stravaStatus(); if (!silent) toast(r.count + ' activités lues sur Strava.'); }
   catch (e) { if (!silent) toast('Strava : ' + e.message); }
 }
-async function connectStrava() {
-  try { const r = await fn('strava-connect', { method: 'GET', query: { action: 'url', redirect: APP_URL } }); location.href = r.url; }
+async function connectStrava(force) {
+  try { const r = await fn('strava-connect', { method: 'GET', query: Object.assign({ action: 'url', redirect: APP_URL }, force ? { force: '1' } : {}) }); location.href = r.url; }
   catch (e) { toast(e.code === 'strava_non_configure' ? 'Strava n\'est pas encore configuré côté serveur.' : 'Strava : ' + e.message); }
 }
 async function handleStravaReturn() {
@@ -184,7 +188,7 @@ function drawHealth() {
   // Bouton bien visible pour relier le sommeil
   const fresh = h && h.source === 'health_connect';
   if (isNative()) {
-    $('#hlAct').innerHTML = `<button class="btn ${fresh ? '' : 'pri'} full" id="hlBtn">${fresh ? 'Resynchroniser Health Connect' : 'Connecter Health Connect (sommeil, VFC, FC repos)'}</button>`;
+    $('#hlAct').innerHTML = `<button class="btn ${fresh ? '' : 'pri'} full" id="hlBtn">${fresh ? 'Resynchroniser Health Connect' : 'Connecter Health Connect (sommeil, VFC, FC repos, poids)'}</button>`;
     $('#hlBtn').onclick = async () => { $('#hlBtn').disabled = true; await nativeHealthSync(false); renderAll(); };
   } else if (!h) {
     $('#hlAct').innerHTML = '<button class="btn full" id="hlBtn">Relier mon sommeil automatiquement</button>';
@@ -195,8 +199,10 @@ async function nativeHealthSync(silent) {
   if (!isNative()) return;
   try {
     const av = await healthAvailable(); if (!av.available) { if (!silent) toast('Health Connect n\'est pas disponible sur ce téléphone.'); return; }
-    if (!silent) await connectHealth();
+    // demande l'accès (une fois en auto, ou à chaque clic) : sommeil, VFC, FC repos, poids, VO2max
+    if (!silent || !S.auto?.perm2) { await connectHealth(); await save('auto', Object.assign({}, S.auto, { perm2: true })); }
     const n = await syncHealth(user.id); await loadHealth();
+    const ex = await readExtras(); if (Object.keys(ex).length) await save('auto', Object.assign({}, S.auto, ex, { at: Date.now() }));
     if (!silent) toast(n ? n + ' jours de sommeil/VFC importés depuis Health Connect.' : 'Rien trouvé : vérifie que Samsung Health, Garmin Connect ou COROS partagent le sommeil avec Health Connect.');
   } catch (e) { if (!silent) toast('Health Connect : ' + e.message); }
 }
@@ -355,7 +361,7 @@ function loadRule() {
 function ctx() {
   const m = monday(new Date()), L = allEvents();
   return {
-    profil: S.profile, checkin_du_jour: S.checkin && S.checkin.date === today() ? S.checkin : null, forme_sur_100: readiness(), sommeil_vfc_7j: health.slice(0, 7),
+    profil: effProfile(), checkin_du_jour: S.checkin && S.checkin.date === today() ? S.checkin : null, forme_sur_100: readiness(), sommeil_vfc_7j: health.slice(0, 7),
     strava_6_semaines: data ? data.weeks : null, dernieres_seances: data ? data.recent : null,
     agenda_semaine: [...Array(8)].map((_, i) => { const x = dayInfo(addD(m, i), L); delete x.ev; return x; }),
     examens_a_venir: L.filter(e => e.x && e.s > Date.now()).slice(0, 8).map(e => ({ date: dkey(e.s), titre: e.t })),
@@ -370,7 +376,7 @@ $('#genBtn').onclick = async () => {
     if (S.plan && S.plan.semaine && S.plan.semaine !== wk) { const h = (S.hist || []).filter(x => x.semaine !== S.plan.semaine); h.push({ semaine: S.plan.semaine, prevu: planMin(S.plan), fait: doneMin(S.plan), allegee: !!S.plan.allegee }); await save('hist', h.slice(-12)); }
     const days = [...Array(7)].map((_, i) => { const x = dayInfo(addD(start, i), L); delete x.ev; return x; });
     const fixed = weekStatus(0).map(x => ({ dayIndex: x.slot.d, slot: x.slot, final: x.final }));
-    const p = buildPlan({ profile: S.profile || {}, days, fixed, rule: loadRule(), stravaWeeks: data?.weeks, readiness: readiness() });
+    const p = buildPlan({ profile: effProfile(), days, fixed, rule: loadRule(), stravaWeeks: data?.weeks, readiness: readiness() });
     p.semaine = wk; p.done = {}; await save('plan', p); renderAll(); pushSummary();
   } catch (e) { $('#genErr').textContent = 'Impossible de générer le plan : ' + e.message; }
   $('#genBtn').disabled = false;
@@ -437,13 +443,24 @@ $('#bilanBtn').onclick = async () => {
   $('#bilanBtn').disabled = false;
 };
 
+/* ---------- repères : auto (Strava, montre) + saisie qui corrige ---------- */
+function refsInfo() {
+  const auto = computeAuto({ acts: acts365, athlete: strava?.athlete, health, hextra: S.auto }), man = S.profile?.refs || {}, out = {};
+  AUTO_KEYS.forEach(([k]) => { if (man[k]) out[k] = { v: String(man[k]), src: 'manuel', note: 'saisi dans ton profil', auto: auto[k] }; else if (auto[k]) out[k] = auto[k]; });
+  return out;
+}
+function effProfile() {
+  const p = S.profile || {}, r = refsInfo();
+  return Object.assign({}, p, { refs: Object.fromEntries(Object.entries(r).map(([k, x]) => [k, x.v])) });
+}
+
 /* ---------- profil ---------- */
 const PFIELDS = [
   ['niveau', 'Niveau', 'select', ['', 'Débutant', 'Intermédiaire', 'Confirmé', 'Compétiteur', 'Élite']],
   ['objectif', 'Objectif principal', 'text', 'Ex : 10 km d\'Issy en 40 min'], ['date', 'Date de l\'objectif', 'date'], ['chrono', 'Objectif chiffré', 'text', 'Chrono, classement…'],
   ['heures', 'Heures dispo par semaine', 'number'],
 ];
-const REFS = [['fcmax', 'FC max', 'bpm'], ['fcrepos', 'FC repos', 'bpm'], ['seuil', 'Allure seuil course', 'min/km'], ['vma', 'VMA', 'km/h'], ['ftp', 'FTP vélo', 'W'], ['css', 'CSS natation', 'min/100 m']];
+const REFS = AUTO_KEYS;
 function editProfile() {
   const p = S.profile || {}, r = p.refs || {};
   $('#dlgBody').innerHTML = `<h3>Mon profil</h3><p class="small mut">Tout est facultatif, mais plus c'est rempli, plus le plan est précis.</p>
@@ -451,7 +468,7 @@ function editProfile() {
    <label>Sports</label><div class="chips" id="pfS">${SPORTS.map(x => `<button class="chip" data-o="${esc(x)}" aria-pressed="${(p.sports || []).includes(x)}">${esc(x)}</button>`).join('')}</div>
    ${PFIELDS.map(([k, l, t, o]) => `<label for="pf_${k}">${l}</label>` + (t === 'select' ? `<select id="pf_${k}">${o.map(x => `<option ${p[k] === x ? 'selected' : ''}>${x}</option>`).join('')}</select>` : `<input id="pf_${k}" type="${t}" value="${esc(p[k])}" ${o ? `placeholder="${esc(o)}"` : ''} ${t === 'number' ? 'inputmode="decimal" step="0.5"' : ''}>`)).join('')}
    <label>Jours possibles</label><div class="chips" id="pfJ">${DAYS.map(d => `<button class="chip" data-o="${d}" aria-pressed="${!(p.jours && p.jours.length) || p.jours.includes(d)}">${d.slice(0, 3)}</button>`).join('')}</div>
-   <h3 style="margin-top:18px">Repères</h3>${REFS.map(([k, l, u]) => `<label for="rf_${k}">${l} <span class="mut" style="font-weight:400">(${u})</span></label><input id="rf_${k}" value="${esc(r[k])}">`).join('')}
+   <h3 style="margin-top:18px">Repères</h3><p class="small mut">Remplis tout seuls depuis Strava et ta montre. Ne tape une valeur que pour corriger : laisse vide pour garder l'automatique.</p>${(() => { const A = computeAuto({ acts: acts365, athlete: strava?.athlete, health, hextra: S.auto }); return REFS.map(([k, l, u]) => `<label for="rf_${k}">${l} <span class="mut" style="font-weight:400">(${u})</span>${A[k] ? ` <span class="badge ok">auto ${esc(A[k].v)}</span>` : ''}</label><input id="rf_${k}" value="${esc(r[k])}" placeholder="${A[k] ? esc(A[k].v + ' · ' + SRC_LABEL[A[k].src]) : 'non disponible'}">`).join(''); })()}
    <label for="pf_bl">Blessures ou douleurs</label><textarea id="pf_bl" rows="2">${esc(p.blessures)}</textarea>
    <button class="btn pri full" id="pfOk" style="margin-top:14px">Enregistrer</button>`;
   $('#dlgBody').querySelectorAll('#pfS .chip,#pfJ .chip').forEach(c => c.onclick = () => c.setAttribute('aria-pressed', c.getAttribute('aria-pressed') !== 'true'));
@@ -464,13 +481,23 @@ function editProfile() {
   };
 }
 $('#editBtn').onclick = editProfile;
+function refsHTML() {
+  const R = refsInfo(), miss = REFS.filter(([k]) => !R[k]).map(([, l]) => l);
+  const scope = strava?.connected && strava.athlete && strava.athlete.profile_scope === false;
+  const items = REFS.filter(([k]) => R[k]).map(([k, l, u]) => { const x = R[k]; return `<div class="refi"><div class="small mut">${esc(l)}</div><div class="v">${esc(x.v)} <small>${esc(u)}</small></div><div class="small"><span class="badge ${x.src === 'manuel' ? 'n' : 'ok'}">${esc(SRC_LABEL[x.src])}</span> <span class="mut">${esc(x.note)}</span></div></div>`; }).join('');
+  return `<div class="card refs" style="margin:0;grid-column:1/-1"><div class="row sp"><b>Mes repères</b><span class="small mut">mis à jour tout seuls</span></div>
+    ${items ? `<div class="refg">${items}</div>` : `<p class="small mut">Connecte Strava (et Health Connect sur Android) : FC max, allure seuil, VMA, CSS, FTP, poids et FC repos se rempliront tout seuls.</p>`}
+    ${scope ? `<p class="small" style="margin-top:10px">Strava ne partage pas encore ton poids, ta FTP ni tes zones avec l'appli.</p><button class="btn pri full" id="refRecon">Autoriser Strava à les partager</button>` : ''}
+    ${items && miss.length ? `<p class="small mut" style="margin-top:8px">Pas encore de données pour : ${esc(miss.join(', '))}.</p>` : ''}</div>`;
+}
 function drawProfile() {
   const p = S.profile || {};
   $('#bibName').textContent = p.prenom || 'Athlète'; $('#bibSport').textContent = [(p.sports || []).slice(0, 2).join(' · '), p.niveau].filter(Boolean).join(' · ') || 'Coaching personnel · tous sports';
   let goal = p.objectif || ''; if (p.date) { const dd = Math.ceil((new Date(p.date + 'T09:00') - new Date()) / 864e5); if (dd >= 0) goal += ' · J-' + dd; }
   $('#bibGoal').textContent = goal;
-  const rows = [['Sports', (p.sports || []).join(', ')], ['Niveau', p.niveau], ['Objectif', [p.objectif, p.date, p.chrono].filter(Boolean).join(' · ')], ['Heures / semaine', p.heures], ['Jours', (p.jours || []).join(', ') || 'tous'], ['Repères', REFS.filter(([k]) => p.refs?.[k]).map(([k, l, u]) => l + ' ' + p.refs[k] + ' ' + u).join(' · ')], ['Blessures', p.blessures]];
-  $('#prof').innerHTML = rows.map(([l, v]) => `<div class="card" style="margin:0"><div class="small mut">${esc(l)}</div><div>${esc(v || '—')}</div></div>`).join('');
+  const rows = [['Sports', (p.sports || []).join(', ')], ['Niveau', p.niveau], ['Objectif', [p.objectif, p.date, p.chrono].filter(Boolean).join(' · ')], ['Heures / semaine', p.heures], ['Jours', (p.jours || []).join(', ') || 'tous'], ['Blessures', p.blessures]];
+  $('#prof').innerHTML = refsHTML() + rows.map(([l, v]) => `<div class="card" style="margin:0"><div class="small mut">${esc(l)}</div><div>${esc(v || '—')}</div></div>`).join('');
+  const rc = $('#refRecon'); if (rc) rc.onclick = () => connectStrava(true);
   $('#meEmail').textContent = user?.email || '';
 }
 $('#logoutBtn').onclick = $('#blockedOut').onclick = async () => { await sb.auth.signOut(); location.reload(); };
@@ -493,7 +520,7 @@ function bindSrc(root) {
   const q = s => root.querySelector(s);
   q('[data-a=addics]') && (q('[data-a=addics]').onclick = () => addIcsDialog());
   root.querySelectorAll('[data-rmics]').forEach(b => b.onclick = async () => { await save('sources', Object.assign({}, S.sources, { ics: (S.sources.ics || []).filter(x => x.id !== b.dataset.rmics) })); await syncCalendars(true); renderAll(); });
-  q('[data-a=strava]') && (q('[data-a=strava]').onclick = connectStrava);
+  q('[data-a=strava]') && (q('[data-a=strava]').onclick = () => connectStrava());
   q('[data-a=stravaoff]') && (q('[data-a=stravaoff]').onclick = async () => { await fn('strava-connect', { body: { action: 'disconnect' } }).catch(() => { }); await stravaStatus(); data = null; renderAll(); });
   q('[data-a=health]') && (q('[data-a=health]').onclick = async () => { await nativeHealthSync(false); renderAll(); });
   q('[data-a=healthhow]') && (q('[data-a=healthhow]').onclick = healthHowDialog);
