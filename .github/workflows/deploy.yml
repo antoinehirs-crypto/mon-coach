@@ -43,7 +43,7 @@ jobs:
       - name: Clés serveur (Strava, IA)
         if: ${{ env.SUPABASE_ACCESS_TOKEN != '' }}
         env:
-          STRAVA_CLIENT_ID: ${{ vars.STRAVA_CLIENT_ID || secrets.STRAVA_CLIENT_ID }}
+          STRAVA_CLIENT_ID: ${{ vars.STRAVA_CLIENT_ID || secrets.STRAVA_CLIENT_ID || '300740' }}
           STRAVA_CLIENT_SECRET: ${{ secrets.STRAVA_CLIENT_SECRET }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
