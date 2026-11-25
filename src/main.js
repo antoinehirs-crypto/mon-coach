@@ -181,6 +181,15 @@ function drawHealth() {
   if (h?.hrv_ms && b) { const d = (h.hrv_ms - b) / b * 100; note = `VFC ${d >= 0 ? '+' : ''}${Math.round(d)} % vs ta moyenne 7 j. ` + (d < -12 ? 'Récupération incomplète : allège aujourd\'hui.' : d > 8 ? 'Bien récupéré.' : 'Dans ta normale.'); }
   else if (!h) note = last ? 'Dernière donnée reçue le ' + new Date(last.date).toLocaleDateString('fr-FR') + '.' : 'Pas encore de données de sommeil automatiques : voir Profil → Sources. En attendant, le check-in suffit.';
   $('#hlNote').textContent = note;
+  // Bouton bien visible pour relier le sommeil
+  const fresh = h && h.source === 'health_connect';
+  if (isNative()) {
+    $('#hlAct').innerHTML = `<button class="btn ${fresh ? '' : 'pri'} full" id="hlBtn">${fresh ? 'Resynchroniser Health Connect' : 'Connecter Health Connect (sommeil, VFC, FC repos)'}</button>`;
+    $('#hlBtn').onclick = async () => { $('#hlBtn').disabled = true; await nativeHealthSync(false); renderAll(); };
+  } else if (!h) {
+    $('#hlAct').innerHTML = '<button class="btn full" id="hlBtn">Relier mon sommeil automatiquement</button>';
+    $('#hlBtn').onclick = healthHowDialog;
+  } else $('#hlAct').innerHTML = '';
 }
 async function nativeHealthSync(silent) {
   if (!isNative()) return;
@@ -540,7 +549,7 @@ async function healthHowDialog() {
   $('#dlgBody').innerHTML = `<h3>Sommeil et récupération</h3>
    <div class="seg2"><button class="btn sm ${!ios ? 'pri' : ''}" data-os="a">Android</button><button class="btn sm ${ios ? 'pri' : ''}" data-os="i">iPhone</button></div>
    <div id="osA" ${ios ? 'hidden' : ''}><p class="small">Samsung Health, Garmin Connect et COROS savent écrire dans <b>Health Connect</b>, le coffre santé d'Android. L'appli Mon Coach pour Android le lit à chaque ouverture.</p>
-    <ol class="small"><li>Dans Garmin Connect / COROS / Samsung Health : Paramètres → Health Connect → autorise le <b>sommeil</b>, la <b>VFC</b> et la <b>FC au repos</b>.</li><li>Installe l'appli Mon Coach Android ${APK_URL ? `: <a href="${esc(APK_URL)}">télécharger l'APK</a>` : '(lien fourni par ton coach)'} et connecte-toi avec le même compte.</li><li>Profil → Sources → Sommeil → Connecter, puis autorise la lecture.</li></ol></div>
+    <div class="tip" style="margin-top:0"><b>Tu es dans le navigateur.</b> La lecture du sommeil ne marche que dans l'<b>appli Mon Coach</b> installée (icône carrée orange sur fond vert). Ouvre-la, connecte-toi avec le même e-mail, et un bouton <b>« Connecter Health Connect »</b> apparaît sur l'écran Aujourd'hui.</div><ol class="small"><li>Dans Garmin Connect / COROS / Samsung Health : Paramètres → Health Connect → autorise le <b>sommeil</b>, la <b>VFC</b> et la <b>FC au repos</b>.</li><li>Installe l'appli Mon Coach Android ${APK_URL ? `: <a href="${esc(APK_URL)}">télécharger l'APK</a>` : '(lien fourni par ton coach)'} et connecte-toi avec le même compte.</li><li>Profil → Sources → Sommeil → Connecter, puis autorise la lecture.</li></ol></div>
    <div id="osI" ${ios ? '' : 'hidden'}><p class="small">Garmin, COROS et Samsung peuvent écrire dans <b>Apple Santé</b>. Un Raccourci envoie chaque matin ta nuit à ton compte.</p>
     <ol class="small"><li>Appli <b>Raccourcis</b> → Automatisation → Nouvelle → Heure de la journée, 9:00, tous les jours, « Exécuter immédiatement ».</li>
     <li>Action <b>Rechercher des échantillons de santé</b> : Type = Analyse du sommeil, Date de début = dans les derniers 1 jour. Puis <b>Calculer les statistiques</b> → Somme, sur la Durée (en heures).</li>
