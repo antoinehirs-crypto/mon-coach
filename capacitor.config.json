@@ -1,0 +1,6 @@
+{
+  "appId": "fr.moncoach.app",
+  "appName": "Mon Coach",
+  "webDir": "dist",
+  "android": { "allowMixedContent": false }
+}

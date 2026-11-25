@@ -1,0 +1,60 @@
+name: Appli Android (sommeil via Health Connect)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/android-config.mjs'
+      - '.github/workflows/android.yml'
+      - 'package.json'
+
+permissions:
+  contents: write
+
+env:
+  APP_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - run: npm ci
+      - name: Construire le web (secours hors ligne)
+        env:
+          VITE_SUPABASE_URL: https://${{ vars.SUPABASE_PROJECT_REF }}.supabase.co
+          VITE_SUPABASE_ANON_KEY: ${{ vars.SUPABASE_ANON_KEY }}
+        run: npm run build
+      - name: Projet Android
+        run: |
+          node scripts/android-config.mjs
+          npx cap add android
+          # Health Connect demande Android 8+ (API 26)
+          sed -i 's/minSdkVersion = [0-9]*/minSdkVersion = 26/' android/variables.gradle
+          # Page de confidentialité affichée par Health Connect
+          sed -i "s#</resources>#    <string name=\"health_connect_privacy_policy_url\">${APP_URL}privacy.html</string>\n</resources>#" android/app/src/main/res/values/strings.xml
+          npx cap sync android
+      - name: Clé de signature stable (facultative)
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then mkdir -p ~/.android && echo "$KEYSTORE_B64" | base64 -d > ~/.android/debug.keystore; fi
+      - name: Compiler l'APK
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon
+      - name: Publier
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp android/app/build/outputs/apk/debug/app-debug.apk mon-coach.apk
+          gh release delete android --yes --cleanup-tag 2>/dev/null || true
+          gh release create android mon-coach.apk --title "Mon Coach Android" --notes "Appli Android : ouvre Mon Coach et lit le sommeil, la VFC et la FC repos dans Health Connect (Samsung Health, Garmin Connect, COROS). Installation : télécharge mon-coach.apk sur ton téléphone et autorise l'installation."
