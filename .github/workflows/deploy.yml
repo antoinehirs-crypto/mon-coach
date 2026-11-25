@@ -34,7 +34,7 @@ jobs:
       - uses: supabase/setup-cli@v1
         if: ${{ env.SUPABASE_ACCESS_TOKEN != '' }}
         with:
-          version: latest
+          version: 3.4.0
       - name: Lier le projet
         if: ${{ env.SUPABASE_ACCESS_TOKEN != '' }}
         run: supabase link --project-ref "$REF"
@@ -63,11 +63,8 @@ jobs:
           echo "Auth configurée pour $APP_URL"
 
   site:
-    name: Site (GitHub Pages)
+    name: Site (construction)
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -85,5 +82,14 @@ jobs:
       - uses: actions/upload-pages-artifact@v5
         with:
           path: dist
+
+  pages:
+    name: Site (GitHub Pages)
+    needs: site
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - id: deployment
         uses: actions/deploy-pages@v5
