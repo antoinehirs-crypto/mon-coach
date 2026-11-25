@@ -128,8 +128,8 @@ export function propose(c) {
   };
 
   const make = (kind, type, min, why, win) => {
-    const s = session(kind, type, min, Z, lvl);
-    const pl = place(kind, min, win);
+    const s = session(kind, type, min, p, Math.floor(d0.getTime() / 864e5) + options.length);
+    const pl = place(kind, s.duree_min || min, win);
     const raisons = [...why]; if (pl.note) raisons.push(pl.note);
     return Object.assign(s, { type, quand: pl.quand, lieu: pl.lieu, meteo: pl.meteo ? pl.meteo.txt : '', raisons });
   };

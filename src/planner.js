@@ -1,3 +1,4 @@
+import { makeSession } from './sessions.js';
 // Planificateur intégré, gratuit et hors ligne. Il applique les règles du coach :
 // polarisé 80/20, +10 % max par semaine, semaine allégée toutes les 3-4 semaines,
 // rien de dur le jour ou la veille d'un examen, séances chiffrées.
@@ -31,42 +32,9 @@ export function zonesText(p) {
   };
 }
 
-export function session(kind, type, min, Z, lvl) {
-  const wu = Math.min(20, Math.max(10, Math.round(min * .2))), cd = Math.min(15, Math.max(5, Math.round(min * .12)));
-  const body = Math.max(10, min - wu - cd);
-  const L = (a, b, c) => `Échauffement : ${a}\nCorps : ${b}\nRetour au calme : ${c}\nDurée totale : ${min} min`;
-  const beginner = /Débutant/.test(lvl || '');
-  const T = {
-    run: {
-      facile: ['Footing endurance', 'Z2', L(`${wu} min très facile ${Z.z1}`, `${body} min en ${Z.z2}, tu dois pouvoir parler. 4 lignes droites de 15 s souples à la fin.`, `${cd} min marche/trot + mobilité`)],
-      qualite: beginner
-        ? ['Fartlek découverte', 'Z3-Z4 court', L(`${wu} min ${Z.z1}-${Z.z2}`, `8 × (1 min soutenu ${Z.z4} / 2 min trot). Reste relâché.`, `${cd} min trot ${Z.z1}`)]
-        : ['Seuil fractionné', 'Seuil Z4', L(`${wu} min progressif + 3 accélérations`, `${Math.max(2, Math.round(body / 11))} × 8 min ${Z.seuil}, récup 2 min trot`, `${cd} min ${Z.z1}`)],
-      long: ['Sortie longue', 'Z2', L(`${wu} min ${Z.z1}`, `${body} min ${Z.z2} régulier. Boire toutes les 20 min si > 1 h 15.`, `${cd} min marche + étirements légers`)],
-    },
-    bike: {
-      facile: ['Vélo endurance', 'Z2', L(`${wu} min souple`, `${body} min en ${Z.z2} / ${Z.ftp(.56, .75)}, cadence 85-95 tr/min`, `${cd} min très souple`)],
-      qualite: ['Vélo sweet spot', 'Z3-Z4', L(`${wu} min progressif + 3 × 1 min vite`, `${Math.max(2, Math.round(body / 15))} × 10 min à ${Z.ftp(.88, .94)}, récup 5 min souple`, `${cd} min souple`)],
-      long: ['Sortie vélo longue', 'Z2', L(`${wu} min souple`, `${body} min ${Z.z2} / ${Z.ftp(.56, .75)}. Manger 40-60 g de glucides par heure.`, `${cd} min souple`)],
-    },
-    swim: {
-      facile: ['Natation technique', 'Z2', L('300 m nage libre souple + 4 × 50 m éducatifs', `${Math.max(4, Math.round(body / 4))} × 100 m ${Z.z2} (récup 20 s), focus allonge et respiration bilatérale`, '200 m souple dos/brasse')],
-      qualite: ['Natation CSS', 'Seuil', L('400 m progressif + 4 × 25 m vite', `${Math.max(6, Math.round(body / 3.5))} × 100 m ${Z.css}, récup 15 s`, '200 m souple')],
-      long: ['Natation endurance', 'Z2', L('300 m souple', `3 × 400 m ${Z.z2} (récup 30 s), régulier`, '200 m souple')],
-    },
-    renfo: {
-      facile: ['Renfo / prévention', 'Modéré', L('8 min mobilité hanches, chevilles, épaules', '3 tours : squat 12, fentes 10/jambe, pont fessier 15, gainage 40 s, mollets 15', '5 min étirements doux')],
-      qualite: ['Musculation force', 'Lourd', L('10 min mobilité + séries d’approche', '4 × 5 squat ou SDT à ~80 % 1RM, 3 × 8 développé, 3 × 8 tirage', '5 min retour au calme')],
-      long: ['Renfo complet', 'Modéré', L('10 min mobilité', '4 tours circuit gainage + jambes + haut du corps', '5 min étirements')],
-    },
-    sport: {
-      facile: ['Endurance générale', 'Z2', L(`${wu} min facile`, `${body} min activité continue en ${Z.z2} (footing, vélo, rameur)`, `${cd} min mobilité`)],
-      qualite: ['Physique intermittent', 'Z4-Z5', L(`${wu} min progressif + gammes`, `2 × (8 × 15 s vite / 15 s récup), 3 min entre les séries`, `${cd} min trot`)],
-      long: ['Endurance longue', 'Z2', L(`${wu} min facile`, `${body} min ${Z.z2}`, `${cd} min mobilité`)],
-    },
-  };
-  const [titre, intensite, detail] = (T[kind] || T.sport)[type];
-  return { sport: kind === 'sport' ? 'sport' : kind, titre, duree_min: min, intensite, detail, dur: type === 'qualite' };
+/** Séance chiffrée (voir sessions.js) : la durée est la somme des blocs. */
+export function session(kind, type, min, p = {}, seed = 0) {
+  return makeSession(kind, type, min, p.refs || {}, p.niveau || '', seed);
 }
 
 /**
@@ -79,6 +47,7 @@ export function buildPlan(a) {
   const disc = disciplinesOf(p.sports);
   const lvl = p.niveau || '';
   const Z = zonesText(p);
+  const wk = Math.floor(new Date(a.days[0].date).getTime() / (7 * 864e5));
   const okDays = (p.jours && p.jours.length) ? p.jours : DAYS;
 
   // ---- volume cible
@@ -101,11 +70,11 @@ export function buildPlan(a) {
     const sl = f.slot; if (sl.k === 'autre') return;
     const min = Math.round((tmin(sl.e) - tmin(sl.s)));
     const kind = sl.k === 'club' ? 'sport' : sl.k;
-    const s = session(kind, 'facile', min, Z, lvl);
+    const s = session(kind, 'facile', min, p, wk);
     s.titre = sl.t; s.intensite = 'Créneau fixe';
-    s.detail = `Ton créneau ${sl.lieu ? 'à ' + sl.lieu + ' ' : ''}de ${sl.s} à ${sl.e}.\n` + (kind === 'swim' ? 'Si l’entraîneur ne donne rien : ' + session('swim', 'facile', min, Z, lvl).detail : 'Reste majoritairement en endurance, sauf consigne du club.');
+    s.detail = `Ton créneau ${sl.lieu ? 'à ' + sl.lieu + ' ' : ''}de ${sl.s} à ${sl.e}.\n` + (kind === 'swim' ? 'Si l’entraîneur ne donne rien : ' + session('swim', 'facile', min, p, wk).detail : 'Reste majoritairement en endurance, sauf consigne du club.');
     s.pourquoi = 'Créneau de ta semaine type, compatible avec tes cours.';
-    s.fixe = true;
+    s.fixe = true; s.quand = sl.s + '-' + sl.e; s.duree_min = min; s.icu = null; s.steps = null; s.indoor = null; s.dur = false;
     jours[f.dayIndex].seances.push(s); used += min;
   });
 
@@ -150,10 +119,11 @@ export function buildPlan(a) {
   plan.forEach(x => {
     let min = x.fixedMin || Math.round(avail * weight(x) / wsum / 5) * 5;
     const cap = x.type === 'long' ? (x.kind === 'bike' ? 240 : 150) : x.kind === 'swim' ? 75 : 90;
-    min = Math.max(x.kind === 'swim' ? 40 : 30, Math.min(cap, min));
+    const floor = { run: { facile: 35, qualite: 50, long: 70 }, bike: { facile: 45, qualite: 60, long: 90 }, swim: { facile: 40, qualite: 40, long: 45 } }[x.kind]?.[x.type] || 30;
+    min = Math.max(floor, Math.min(cap, min));
     const day = jours[x.d]._info;
     if (day.veille_examen.length) min = Math.min(min, 45);
-    const s = session(x.kind, x.type, min, Z, lvl);
+    const s = session(x.kind, x.type, min, p, wk + x.d);
     s.pourquoi = x.type === 'qualite' ? 'Séance clé de la semaine (les 20 % d’intensité).' : x.type === 'long' ? 'Le volume en endurance construit ton moteur.' : day.veille_examen.length ? 'Veille d’examen : court et facile, pour garder le rythme sans fatigue.' : 'Endurance facile : c’est la base du polarisé.';
     jours[x.d].seances.push(s);
   });

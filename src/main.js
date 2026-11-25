@@ -5,7 +5,7 @@ import { buildPlan, DAYS, tmin } from './planner.js';
 import { isNative, healthAvailable, connectHealth, syncHealth, readExtras, openHealthSettings } from './health.js';
 import { computeAuto, AUTO_KEYS, SRC_LABEL } from './auto.js';
 import { getWeather } from './weather.js';
-import { propose } from './propose.js';
+import { propose, freeWindows } from './propose.js';
 import L_ from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { geocode, loop, trackRoute, gpx } from './routes.js';
@@ -383,7 +383,7 @@ $('#genBtn').onclick = async () => {
     const days = [...Array(7)].map((_, i) => { const x = dayInfo(addD(start, i), L); delete x.ev; return x; });
     const fixed = weekStatus(0).map(x => ({ dayIndex: x.slot.d, slot: x.slot, final: x.final }));
     const p = buildPlan({ profile: effProfile(), days, fixed, rule: loadRule(), stravaWeeks: data?.weeks, readiness: readiness() });
-    p.semaine = wk; p.done = {}; await save('plan', p); renderAll(); pushSummary();
+    p.semaine = wk; p.done = {}; assignTimes(p); await save('plan', p); renderAll(); pushSummary();
   } catch (e) { $('#genErr').textContent = 'Impossible de générer le plan : ' + e.message; }
   $('#genBtn').disabled = false;
 };
@@ -391,13 +391,14 @@ const dayOf = (p, i) => (p.jours || []).find(x => (x.jour || '').toLowerCase() =
 function sesCard(p, i, k, s, inf) {
   const id = i + '_' + k, dn = p.done && p.done[id], cls = ['swim', 'bike', 'run', 'renfo', 'repos'].includes(s.sport) ? s.sport : '';
   const risk = s.sport !== 'repos' && HARD.test((s.intensite || '') + ' ' + (s.titre || '')) && inf && (inf.examens.length || inf.veille_examen.length);
-  return `<div class="ses ${cls}${dn ? ' done' : ''}" data-id="${id}" ${s.sport === 'repos' ? '' : 'tabindex="0" role="button"'}><b>${esc(s.titre || 'Repos')}</b><span class="small mut">${s.sport === 'repos' ? 'Repos / récupération' : esc(s.duree_min) + ' min · ' + esc(s.intensite)}</span>${risk ? '<span class="warn">Séance dure près d\'un examen : à alléger</span>' : ''}</div>`;
+  return `<div class="ses ${cls}${dn ? ' done' : ''}" data-id="${id}" ${s.sport === 'repos' ? '' : 'tabindex="0" role="button"'}><b>${esc(s.titre || 'Repos')}</b><span class="small mut">${s.sport === 'repos' ? 'Repos / récupération' : (s.quand ? esc(s.quand) + ' · ' : '') + esc(s.duree_min) + ' min · ' + esc(s.intensite)}${s.indoor ? ' · home trainer possible' : ''}</span>${risk ? '<span class="warn">Séance dure près d\'un examen : à alléger</span>' : ''}</div>`;
 }
 function drawPlan() {
   const p = S.plan, cur = dkey(monday(new Date()));
   $('#genBtn').textContent = p && p.semaine === cur ? 'Régénérer ma semaine' : 'Générer ma semaine';
   if (!p) { $('#week').innerHTML = ''; $('#kpis').innerHTML = ''; $('#planSum').textContent = 'Pas encore de plan. Ajoute ta semaine type et complète ton profil, puis génère ta semaine.'; $('#todaySes').innerHTML = '<p class="small mut">Pas encore de plan cette semaine. <a href="#semaine">Génère-le</a>.</p>'; $('#tips').hidden = true; return; }
   const old = p.semaine !== cur;
+  if (!old && !p._t) { assignTimes(p); save('plan', p); }
   $('#planTitle').textContent = old ? 'Semaine passée' : (p.titre || 'Ma semaine'); $('#planSum').textContent = (old ? 'Ce plan date de la semaine du ' + p.semaine + '. Génère la nouvelle. ' : '') + (p.resume || '');
   const pm = planMin(p), dm = doneMin(p), rp = Object.values(p.done || {}).map(d => +d.rpe).filter(Boolean);
   $('#kpis').innerHTML = `<div><span class="mono">Prévu</span><span class="v">${Math.floor(pm / 60)}h${p2(pm % 60)}</span></div><div><span class="mono">Fait</span><span class="v">${Math.floor(dm / 60)}h${p2(dm % 60)}</span></div><div><span class="mono">RPE moyen</span><span class="v">${rp.length ? (rp.reduce((a, b) => a + b, 0) / rp.length).toFixed(1) : '–'}</span></div>`;
@@ -413,18 +414,51 @@ function drawPlan() {
 }
 function openSes(id) {
   const [i, k] = id.split('_').map(Number), p = S.plan, s = dayOf(p, i).seances[k], dn = (p.done || {})[id] || {};
-  $('#dlgBody').innerHTML = `<h3>${esc(s.titre)}</h3><p class="mut small">${esc(DAYS[i])} · ${esc(s.duree_min)} min · ${esc(s.intensite)}</p><p style="white-space:pre-wrap">${esc(s.detail)}</p><p class="small mut">${esc(s.pourquoi)}</p>
+  const date = addD(new Date(p.semaine + 'T12:00'), i), ind = s.indoor;
+  $('#dlgBody').innerHTML = `<h3>${esc(s.titre)}</h3><p class="mut small">${esc(DAYS[i])}${s.quand ? ' · <b>' + esc(s.quand) + '</b>' : ''} · ${esc(s.duree_min)} min · ${esc(s.intensite)}${s.lieu ? ' · ' + esc(s.lieu) : ''}</p>
+  ${s.icu ? '<div id="sesWatch" style="margin-bottom:10px"></div>' : ''}
+  ${s.sport === 'run' ? '<button class="btn full" id="sesRun" style="margin:0 0 10px">🗺️ Parcours depuis chez moi + choix du terrain</button>' : ''}
+  ${ind ? `<div class="seg" id="sesVar" style="grid-template-columns:1fr 1fr;margin:0 0 8px"><button data-v="out" aria-pressed="true">Dehors</button><button data-v="in" aria-pressed="false">Home trainer</button></div>` : ''}
+  <div id="sesBody"></div><p class="small mut">${esc(s.pourquoi || '')}</p>
   <label for="rpe">Ressenti (RPE 1 à 10)</label><input id="rpe" type="number" inputmode="numeric" min="1" max="10" value="${esc(dn.rpe || '')}"><label for="cm">Commentaire</label><textarea id="cm" rows="2">${esc(dn.cm || '')}</textarea>
-  ${s.sport === 'run' ? '<button class="btn full" id="sesRun" style="margin:4px 0 8px">Parcours et séance pour la montre</button>' : ''}
   <div class="row" style="margin-top:12px"><button class="btn pri" id="doneBtn">${dn.ok ? 'Mettre à jour' : 'Séance faite'}</button>${dn.ok ? '<button class="btn" id="undoBtn">Pas faite</button>' : ''}</div>`;
-  $('#dlg').showModal();
-  const sr = $('#sesRun'); if (sr) sr.onclick = () => runDialog(s, addD(new Date(p.semaine + 'T12:00'), i));
+  const show = v => {
+    const x = v === 'in' ? ind : s;
+    $('#sesBody').innerHTML = `${v === 'in' ? `<p><b>${esc(ind.titre)}</b> · ${esc(ind.duree_min)} min</p>` : ''}<p style="white-space:pre-wrap;margin-top:0">${esc(x.detail)}</p>${x.conseil ? `<p class="small">${esc(x.conseil)}</p>` : ''}`;
+    if (x.icu) watchBox($('#sesWatch'), { titre: x.titre, icu: x.icu, type: x.icuType || 'Run', texte: x.detail }, date);
+  };
+  show('out');
+  const sv = $('#sesVar'); if (sv) sv.querySelectorAll('[data-v]').forEach(b => b.onclick = () => { sv.querySelectorAll('[data-v]').forEach(x => x.setAttribute('aria-pressed', x === b)); show(b.dataset.v); });
+  if (!$('#dlg').open) $('#dlg').showModal();
+  const sr = $('#sesRun'); if (sr) sr.onclick = () => runDialog(s, date);
   $('#doneBtn').onclick = async () => { p.done = p.done || {}; p.done[id] = { ok: true, rpe: $('#rpe').value, cm: $('#cm').value }; await save('plan', p); $('#dlg').close(); renderAll(); pushSummary(); };
   const u = $('#undoBtn'); if (u) u.onclick = async () => { delete p.done[id]; await save('plan', p); $('#dlg').close(); renderAll(); };
 }
 $('#dlgClose').onclick = () => $('#dlg').close();
 
 /* ---------- propositions de séance ---------- */
+/** Heure conseillée pour chaque séance : un créneau libre de l'agenda (trajets compris), le soir en semaine, le matin le week-end. */
+function assignTimes(plan) {
+  const m = new Date(plan.semaine + 'T00:00'), L = allEvents(), cur = monday(new Date());
+  const off = Math.round((m - cur) / (7 * 864e5)), ws = off >= 0 && off <= 1 ? weekStatus(off) : [];
+  const hh = x => p2(Math.floor(x / 60)) + ':' + p2(Math.round(x % 60));
+  (plan.jours || []).forEach((j, i) => {
+    const date = addD(m, i), inf = dayInfo(date, L), we = i >= 5;
+    let wins = freeWindows({ ev: inf.ev, fixed: ws.filter(x => x.date === dkey(date)), isToday: false, nowMin: 0 });
+    (j.seances || []).forEach(sx => {
+      if (sx.sport === 'repos' || sx.fixe || !sx.duree_min) return;
+      const d = +sx.duree_min, pref = we ? 9 * 60 + 30 : 18 * 60;
+      const fit = wins.filter(w => w[1] - w[0] >= d);
+      if (!fit.length) { sx.quand = ''; sx.pourquoi = (sx.pourquoi || '') + ' Pas de créneau assez long dans ton agenda ce jour-là.'; return; }
+      const w = fit.find(w => w[0] <= pref && w[1] >= pref + d) || fit.find(w => w[0] >= pref) || fit[fit.length - 1];
+      let st = Math.max(w[0], Math.min(pref, w[1] - d)); if (st + d > w[1]) st = w[0];
+      if (!we && st < 7 * 60 && w[1] >= 12 * 60 + d) st = Math.max(w[0], 12 * 60 + 15 - Math.round(d / 2));
+      sx.quand = hh(st) + '-' + hh(st + d);
+      wins = wins.flatMap(x => x === w ? [[x[0], st - 30], [st + d + 30, x[1]]].filter(y => y[1] - y[0] >= 30) : [x]);
+    });
+  });
+  plan._t = 1;
+}
 const planDayOf = date => { const p = S.plan; if (!p || p.semaine !== dkey(monday(date))) return null; return dayOf(p, (new Date(date).getDay() + 6) % 7).seances || []; };
 function drawProps() {
   if (!user || !$('#propList')) return;
@@ -441,21 +475,33 @@ function drawProps() {
   $('#propList').innerHTML = propRes.options.map((o, i) => `<div class="prop ${['swim', 'bike', 'run', 'renfo', 'repos'].includes(o.sport) ? o.sport : ''}">
     <div class="row sp" style="align-items:flex-start"><div><b>${i === 0 && o.sport !== 'repos' ? 'Conseillé · ' : ''}${esc(o.titre)}</b><div class="small mut">${o.duree_min ? esc(o.duree_min) + ' min · ' + esc(o.intensite) : 'Repos'}${o.quand ? ' · ' + esc(o.quand) : ''}${o.lieu ? ' · ' + esc(o.lieu) : ''}</div>${o.meteo ? `<div class="small mut">Météo : ${esc(o.meteo)}</div>` : ''}</div></div>
     <ul class="why">${(o.raisons || []).map(r => `<li>${esc(r)}</li>`).join('')}</ul>
-    ${o.detail ? `<details><summary class="small">Voir la séance</summary><p style="white-space:pre-wrap;margin:6px 0 0">${esc(o.detail)}</p></details>` : ''}
-    <div class="row" style="margin-top:8px;gap:8px">${o.sport !== 'repos' || o.titre === 'Repos complet' ? `<button class="btn sm${i === 0 ? ' pri' : ''}" data-pick="${i}">Choisir</button>` : ''}${o.sport === 'run' ? `<button class="btn sm" data-run="${i}">Parcours et montre</button>` : ''}</div></div>`).join('');
+    ${o.indoor ? `<div class="small mut">Ou home trainer : ${esc(o.indoor.titre)} · ${esc(o.indoor.duree_min)} min</div>` : ''}
+    <div class="row" style="margin-top:8px;gap:8px">${o.sport !== 'repos' || o.titre === 'Repos complet' ? `<button class="btn sm${i === 0 ? ' pri' : ''}" data-pick="${i}">Choisir</button>` : ''}${o.detail ? `<button class="btn sm" data-see="${i}">Voir${o.icu ? ' et envoyer ⌚' : ''}</button>` : ''}${o.sport === 'run' ? `<button class="btn sm" data-run="${i}">Parcours 🗺️</button>` : ''}</div></div>`).join('');
   $('#propMeteo').innerHTML = meteo ? `Météo ${esc(meteo.nom)} (Open-Meteo). <a href="#" id="propGeo">Utiliser ma position</a>` : 'Météo indisponible pour le moment.';
   const g = $('#propGeo'); if (g) g.onclick = e => { e.preventDefault(); navigator.geolocation?.getCurrentPosition(async pos => { await save('profile', Object.assign({}, S.profile, { geo: { lat: +pos.coords.latitude.toFixed(3), lon: +pos.coords.longitude.toFixed(3), nom: 'ta position' } })); loadMeteo(); toast('Météo réglée sur ta position.'); }, () => toast('Position refusée : on garde Versailles.')); };
   document.querySelectorAll('[data-pick]').forEach(btn => btn.onclick = () => pickProp(+btn.dataset.pick, date));
   document.querySelectorAll('[data-run]').forEach(btn => btn.onclick = () => runDialog(propRes.options[+btn.dataset.run], date));
+  document.querySelectorAll('[data-see]').forEach(btn => btn.onclick = () => propDialog(propRes.options[+btn.dataset.see], date));
 }
 document.querySelectorAll('#propDay [data-pd]').forEach(x => x.onclick = () => { propDay = +x.dataset.pd; drawProps(); });
+function propDialog(o, date) {
+  const ind = o.indoor;
+  $('#dlgBody').innerHTML = `<h3>${esc(o.titre)}</h3><p class="mut small">${o.quand ? '<b>' + esc(o.quand) + '</b> · ' : ''}${esc(o.duree_min)} min · ${esc(o.intensite)}${o.lieu ? ' · ' + esc(o.lieu) : ''}</p>
+    ${o.icu ? '<div id="sesWatch" style="margin-bottom:10px"></div>' : ''}
+    ${ind ? `<div class="seg" id="sesVar" style="grid-template-columns:1fr 1fr;margin:0 0 8px"><button data-v="out" aria-pressed="${o.lieu !== 'Intérieur'}">Dehors</button><button data-v="in" aria-pressed="${o.lieu === 'Intérieur'}">Home trainer</button></div>` : ''}
+    <div id="sesBody"></div>`;
+  const show = v => { const x = v === 'in' ? ind : o; $('#sesBody').innerHTML = `${v === 'in' ? `<p><b>${esc(ind.titre)}</b> · ${esc(ind.duree_min)} min</p>` : ''}<p style="white-space:pre-wrap;margin-top:0">${esc(x.detail)}</p>${x.conseil ? `<p class="small">${esc(x.conseil)}</p>` : ''}`; if (x.icu) watchBox($('#sesWatch'), { titre: x.titre, icu: x.icu, type: x.icuType || 'Run', texte: x.detail }, date); };
+  show(ind && o.lieu === 'Intérieur' ? 'in' : 'out');
+  const sv = $('#sesVar'); if (sv) sv.querySelectorAll('[data-v]').forEach(b => b.onclick = () => { sv.querySelectorAll('[data-v]').forEach(x => x.setAttribute('aria-pressed', x === b)); show(b.dataset.v); });
+  if (!$('#dlg').open) $('#dlg').showModal();
+}
 async function pickProp(i, date) {
   const o = propRes?.options[i]; if (!o) return;
   const wk = dkey(monday(date)), di = (new Date(date).getDay() + 6) % 7;
   let p = S.plan && S.plan.semaine === wk ? JSON.parse(JSON.stringify(S.plan)) : { semaine: wk, titre: 'Ma semaine', resume: 'Séances choisies au jour le jour.', jours: DAYS.map(d => ({ jour: d, seances: [] })), done: {}, source: 'propositions' };
   const j = dayOf(p, di); if (!p.jours.includes(j)) p.jours[di] = j;
   const keep = (j.seances || []).filter(s => s.fixe);
-  const s = { sport: o.sport, titre: o.titre, duree_min: o.duree_min, intensite: o.intensite, detail: o.detail + (o.quand ? `\nQuand : ${o.quand}${o.lieu ? ' · ' + o.lieu : ''}` : ''), pourquoi: (o.raisons || []).join(' · '), dur: o.dur, choisie: true };
+  const s = Object.assign({}, o, { pourquoi: (o.raisons || []).join(' · '), choisie: true }); delete s.raisons; delete s.meteo;
   j.seances = o.sport === 'repos' ? (keep.length ? keep : [Object.assign(s, { duree_min: 0 })]) : keep.concat(s);
   // les coches « faite » de ce jour ne correspondent plus
   Object.keys(p.done || {}).forEach(k => { if (k.startsWith(di + '_')) delete p.done[k]; });
@@ -533,33 +579,36 @@ async function runGpx() {
   toast('GPX téléchargé : importe-le dans l\'appli COROS (Parcours).');
 }
 let icuState = null;
+/** Bloc « Envoyer sur ma montre » (intervals.icu → COROS / Garmin). w = { titre, icu, type, texte } */
+async function watchBox(b, w, date) {
+  if (!b) return;
+  b.innerHTML = '<p class="small mut">Chargement…</p>';
+  if (!icuState) { try { icuState = await fn('intervals-push', { method: 'GET' }); } catch (e) { icuState = { configured: false, err: e.message }; } }
+  if (!b.isConnected) return;
+  const again = () => watchBox(b, w, date);
+  if (icuState.configured) {
+    b.innerHTML = `<button class="btn pri full" data-w="send">⌚ Envoyer sur ma montre</button><p class="small mut" style="margin:6px 0 0">Elle part sur intervals.icu${icuState.athlete ? ' (' + esc(icuState.athlete) + ')' : ''}, qui la transmet à COROS et Garmin Connect. Ouvre ensuite l'appli COROS (ou Garmin Connect) pour synchroniser : la séance apparaît sur la montre le ${esc(new Date(date).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' }))}. · <a href="#" data-w="off">déconnecter</a></p>`;
+    b.querySelector('[data-w=send]').onclick = async e => {
+      const bt = e.currentTarget; bt.disabled = true;
+      try { await fn('intervals-push', { body: { date: dkey(date), type: w.type || 'Run', name: 'Mon Coach · ' + w.titre, description: w.icu, uid: 'moncoach-' + dkey(date) + '-' + (w.type || 'Run') } }); bt.textContent = '✓ Envoyée'; toast('Séance envoyée. Synchronise l\'appli COROS ou Garmin Connect pour la voir sur la montre.'); }
+      catch (err) { toast('Envoi : ' + err.message); bt.disabled = false; }
+    };
+    b.querySelector('[data-w=off]').onclick = async e => { e.preventDefault(); await fn('intervals-push', { body: { action: 'forget' } }); icuState = null; again(); };
+  } else {
+    b.innerHTML = `<details><summary class="btn pri full" style="list-style:none;text-align:center">⌚ Envoyer sur ma montre</summary><p class="small" style="margin:8px 0 4px"><b>Une seule fois</b> : relie ton compte intervals.icu (gratuit, déjà relié à ta COROS et à Garmin).</p><ol class="small" style="padding-left:18px;margin:0">
+      <li>Sur <a href="https://intervals.icu/settings" target="_blank" rel="noopener">intervals.icu → Paramètres</a>, tout en bas : <i>Developer Settings</i> → copie l'<b>API key</b>.</li>
+      <li>Colle-la ici, puis « Relier ».</li></ol>
+      <div class="row" style="margin-top:6px"><input data-w="key" type="password" autocomplete="off" placeholder="Clé API intervals.icu" style="flex:1 1 180px"><button class="btn sm" data-w="save">Relier</button></div></details>
+      <button class="btn full" data-w="copy" style="margin-top:8px">Copier la séance (pour la créer à la main)</button>`;
+    b.querySelector('[data-w=save]').onclick = async e => { const bt = e.currentTarget; try { bt.disabled = true; await fn('intervals-push', { body: { action: 'save', key: b.querySelector('[data-w=key]').value } }); icuState = null; toast('Montre reliée via intervals.icu.'); again(); } catch (err) { toast(err.code === 'cle_refusee' ? 'Clé refusée par intervals.icu.' : 'Erreur : ' + err.message); bt.disabled = false; } };
+    b.querySelector('[data-w=copy]').onclick = async () => { try { await navigator.clipboard.writeText(w.titre + '\n' + (w.texte || '')); toast('Séance copiée.'); } catch (e) { toast('Copie impossible.'); } };
+  }
+}
 async function drawWorkout() {
   const w = rState.w, box = $('#rWk'); if (!box) return;
   const isQ = rState.type === 'qualite';
-  box.innerHTML = `<h3 style="margin-top:16px">${esc(w.titre)}</h3><pre class="wk">${esc(stepsText(w))}</pre><p class="small mut">${esc(w.note || '')}</p>
-    ${isQ ? `<div id="icuBox"><p class="small mut">Chargement…</p></div>` : ''}`;
-  if (!isQ) return;
-  if (!icuState) { try { icuState = await fn('intervals-push', { method: 'GET' }); } catch (e) { icuState = { configured: false, err: e.message }; } }
-  const b = $('#icuBox'); if (!b) return;
-  if (icuState.configured) {
-    b.innerHTML = `<button class="btn pri full" id="icuSend">Envoyer sur ma montre</button><p class="small mut" style="margin:6px 0 0">Via intervals.icu${icuState.athlete ? ' (' + esc(icuState.athlete) + ')' : ''}, qui la transmet à COROS ou Garmin Connect. Elle apparaît ensuite sur ta montre, à la date prévue. · <a href="#" id="icuOff">déconnecter</a></p>`;
-    $('#icuSend').onclick = async () => {
-      $('#icuSend').disabled = true;
-      try { await fn('intervals-push', { body: { date: dkey(rState.date), name: 'Mon Coach · ' + w.titre, description: w.icu, uid: 'moncoach-' + dkey(rState.date) + '-run' } }); toast('Séance envoyée. Synchronise l\'appli COROS ou Garmin Connect pour la voir sur la montre.'); }
-      catch (e) { toast('Envoi : ' + e.message); }
-      $('#icuSend').disabled = false;
-    };
-    $('#icuOff').onclick = async e => { e.preventDefault(); await fn('intervals-push', { body: { action: 'forget' } }); icuState = null; drawWorkout(); };
-  } else {
-    b.innerHTML = `<details open><summary class="small"><b>Relier ta montre COROS ou Garmin (une seule fois, gratuit)</b></summary><ol class="small" style="padding-left:18px">
-      <li>Crée un compte gratuit sur <a href="https://intervals.icu" target="_blank" rel="noopener">intervals.icu</a>.</li>
-      <li>Dans intervals.icu : <i>Settings → Connections</i> → COROS ou Garmin → Connect, et autorise l'envoi des séances (« upload workouts »).</li>
-      <li>Dans intervals.icu : <i>Settings → Developer Settings</i> → copie ton <b>API key</b>, colle-la ci-dessous.</li></ol>
-      <div class="row"><input id="icuKey" type="password" autocomplete="off" placeholder="Clé API intervals.icu" style="flex:1 1 180px"><button class="btn sm" id="icuSave">Relier</button></div></details>
-      <button class="btn full" id="icuCopy" style="margin-top:8px">Copier la séance (pour la créer à la main)</button>`;
-    $('#icuSave').onclick = async () => { try { $('#icuSave').disabled = true; await fn('intervals-push', { body: { action: 'save', key: $('#icuKey').value } }); icuState = null; toast('Montre reliée via intervals.icu.'); drawWorkout(); } catch (e) { toast(e.code === 'cle_refusee' ? 'Clé refusée par intervals.icu.' : 'Erreur : ' + e.message); $('#icuSave').disabled = false; } };
-    $('#icuCopy').onclick = async () => { try { await navigator.clipboard.writeText(w.titre + '\n' + stepsText(w)); toast('Séance copiée.'); } catch (e) { toast('Copie impossible.'); } };
-  }
+  box.innerHTML = `<h3 style="margin-top:16px">${esc(w.titre)}</h3><pre class="wk">${esc(stepsText(w))}</pre><p class="small mut">${esc(w.note || '')}</p>${isQ ? '<div id="icuBox"></div>' : ''}`;
+  if (isQ) watchBox($('#icuBox'), { titre: w.titre, icu: w.icu, type: 'Run', texte: stepsText(w) }, rState.date);
 }
 $('#dlg').addEventListener('close', () => { if (rmap) { rmap.remove(); rmap = null; } rState = null; });
 
