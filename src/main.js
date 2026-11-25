@@ -210,16 +210,39 @@ function drawHealth() {
     $('#hlAct').innerHTML = '<button class="btn full" id="hlBtn">Relier mon sommeil automatiquement</button>';
     $('#hlBtn').onclick = healthHowDialog;
   } else $('#hlAct').innerHTML = '';
+  $('#hlAct').insertAdjacentHTML('beforeend', `<details style="margin-top:10px"><summary class="small mut">Diagnostic</summary><pre class="wk">${esc(diagText())}</pre><button class="btn sm" id="hlCopy">Copier le diagnostic</button></details>`);
+  $('#hlCopy').onclick = async () => { try { await navigator.clipboard.writeText(diagText()); toast('Diagnostic copié : colle-le dans le chat.'); } catch (e) { toast('Copie impossible : fais une capture.'); } };
+}
+function diagText() {
+  const hc = S.auto?.hc || {}, h = hToday(), f = formeDuJour();
+  return [`Version du site : ${__BUILD__}`, `Appli Android : ${isNative() ? 'oui' : 'non (navigateur)'}`,
+    `Dernière lecture Health Connect : ${hc.at ? new Date(hc.at).toLocaleString('fr-FR') : 'jamais'}`,
+    `Autorisations refusées : ${hc.denied == null ? 'inconnu' : hc.denied.length ? hc.denied.join(', ') : 'aucune'}`,
+    `Trouvé sur 14 j : sommeil ${hc.counts?.sleep ?? '?'} · VFC ${hc.counts?.hrv ?? '?'} · FC repos ${hc.counts?.rhr ?? '?'} · FC (4 j) ${hc.counts?.hr ?? '?'}`,
+    `Sources : sommeil ${hc.src?.sleep || '–'} · VFC ${hc.src?.hrv || '–'} · FC repos ${hc.src?.rhr || '–'}`,
+    `Jours enregistrés : ${hc.n ?? '?'}${hc.err ? ' · ERREUR : ' + hc.err : ''}`,
+    `Données serveur : ${health.length} jours, dernier ${health[0]?.date || '–'} · aujourd'hui ${h ? JSON.stringify({ sommeil: h.sleep_min, vfc: h.hrv_ms, fcr: h.resting_hr }) : 'rien'}`,
+    `Forme : ${f.score ?? '–'} (${f.parts.map(p => p[0] + ' ' + p[1]).join(', ') || 'aucune donnée'})`].join('\n');
 }
 async function nativeHealthSync(silent) {
   if (!isNative()) return;
   try {
     const av = await healthAvailable(); if (!av.available) { if (!silent) toast('Health Connect n\'est pas disponible sur ce téléphone.'); return; }
     // demande l'accès (une fois en auto, ou à chaque clic) : sommeil, VFC, FC repos, poids, VO2max
-    if (!silent || !S.auto?.perm2) { await connectHealth(); await save('auto', Object.assign({}, S.auto, { perm2: true })); }
-    const r = await syncHealth(user.id); await loadHealth();
-    const ex = await readExtras(), denied = await healthDenied();
-    await save('auto', Object.assign({}, S.auto, ex, { at: Date.now(), hc: { at: Date.now(), src: r.src, counts: r.counts, denied } }));
+    // Autorisations : redemandées si l'une manque (au clic, ou une fois par jour en automatique)
+    let denied = await healthDenied();
+    const core = ['sleep', 'heartRate', 'heartRateVariability', 'restingHeartRate'];
+    const missing = denied == null || denied.some(t => core.includes(t));
+    if (!silent || (missing && S.auto?.permAsk !== today())) {
+      await connectHealth(); denied = await healthDenied();
+      await save('auto', Object.assign({}, S.auto, { perm2: true, permAsk: today() }));
+    }
+    let r, err = null;
+    try { r = await syncHealth(user.id); } catch (e) { err = e.message || String(e); r = { n: 0, src: {}, counts: {} }; }
+    await loadHealth();
+    const ex = await readExtras().catch(() => ({}));
+    await save('auto', Object.assign({}, S.auto, ex, { at: Date.now(), hc: { at: Date.now(), src: r.src, counts: r.counts, denied, err, n: r.n } }));
+    if (err) throw new Error(err);
     if (!silent) toast(r.n ? `${r.n} jours lus dans Health Connect${r.src.sleep ? ' (sommeil : ' + r.src.sleep + ')' : ''}.` : 'Rien trouvé dans Health Connect : regarde les étapes sous « Nuit et récupération ».');
   } catch (e) { if (!silent) toast('Health Connect : ' + e.message); }
 }
