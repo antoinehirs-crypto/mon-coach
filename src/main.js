@@ -279,7 +279,7 @@ function formeDuJour() {
     const sub = ((n('qualite') - 1) / 4 * 15 + (5 - n('fatigue')) / 4 * 30 + (5 - n('courbatures')) / 4 * 20 + (5 - n('stress')) / 4 * 15 + (n('motivation') - 1) / 4 * 20);
     parts.push(['Ressenti', Math.round(sub), 'check-in du matin', 30]);
   }
-  if (!parts.length || (parts.length === 1 && parts[0][0] === 'Fraîcheur')) return { score: null, parts };
+  if (!parts.length) return { score: null, parts };
   const w = parts.reduce((t, p) => t + p[3], 0);
   return { score: Math.round(parts.reduce((t, p) => t + p[1] * p[3], 0) / w), parts };
 }
