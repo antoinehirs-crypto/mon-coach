@@ -13,6 +13,9 @@ permissions:
   contents: write
 
 env:
+  # Valeurs publiques (déjà visibles dans le site) ; surchargeables par des variables GitHub
+  SB_REF: ${{ vars.SUPABASE_PROJECT_REF || 'esyvrlshmjgvmfwerfgb' }}
+  SB_KEY: ${{ vars.SUPABASE_ANON_KEY || 'sb_publishable_--iujm0ltNcuIOWAaMeyhQ_zy0sk2Na' }}
   APP_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
 
 jobs:
@@ -31,8 +34,8 @@ jobs:
       - run: npm ci
       - name: Construire le web (secours hors ligne)
         env:
-          VITE_SUPABASE_URL: https://${{ vars.SUPABASE_PROJECT_REF }}.supabase.co
-          VITE_SUPABASE_ANON_KEY: ${{ vars.SUPABASE_ANON_KEY }}
+          VITE_SUPABASE_URL: https://${{ env.SB_REF }}.supabase.co
+          VITE_SUPABASE_ANON_KEY: ${{ env.SB_KEY }}
         run: npm run build
       - name: Projet Android
         run: |

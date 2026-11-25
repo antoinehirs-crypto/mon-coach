@@ -15,28 +15,33 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  # Valeurs publiques (déjà visibles dans le site) ; surchargeables par des variables GitHub
+  SB_REF: ${{ vars.SUPABASE_PROJECT_REF || 'esyvrlshmjgvmfwerfgb' }}
+  SB_KEY: ${{ vars.SUPABASE_ANON_KEY || 'sb_publishable_--iujm0ltNcuIOWAaMeyhQ_zy0sk2Na' }}
   APP_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
 
 jobs:
   serveur:
     name: Base et fonctions Supabase
     runs-on: ubuntu-latest
-    if: ${{ vars.SUPABASE_PROJECT_REF != '' }}
     env:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
-      REF: ${{ vars.SUPABASE_PROJECT_REF }}
+      REF: ${{ vars.SUPABASE_PROJECT_REF || 'esyvrlshmjgvmfwerfgb' }}
     steps:
       - uses: actions/checkout@v4
       - uses: supabase/setup-cli@v1
+        if: ${{ env.SUPABASE_ACCESS_TOKEN != '' }}
         with:
           version: latest
       - name: Lier le projet
+        if: ${{ env.SUPABASE_ACCESS_TOKEN != '' }}
         run: supabase link --project-ref "$REF"
       - name: Appliquer le schéma de base (si le mot de passe de la base est fourni)
-        if: ${{ env.SUPABASE_DB_PASSWORD != '' }}
+        if: ${{ env.SUPABASE_DB_PASSWORD != '' && env.SUPABASE_ACCESS_TOKEN != '' }}
         run: supabase db push --password "$SUPABASE_DB_PASSWORD"
       - name: Clés serveur (Strava, IA)
+        if: ${{ env.SUPABASE_ACCESS_TOKEN != '' }}
         env:
           STRAVA_CLIENT_ID: ${{ vars.STRAVA_CLIENT_ID || secrets.STRAVA_CLIENT_ID }}
           STRAVA_CLIENT_SECRET: ${{ secrets.STRAVA_CLIENT_SECRET }}
@@ -46,8 +51,10 @@ jobs:
           if [ -n "$GEMINI_API_KEY" ]; then args="$args GEMINI_API_KEY=$GEMINI_API_KEY"; fi
           supabase secrets set --project-ref "$REF" $args
       - name: Déployer les fonctions
+        if: ${{ env.SUPABASE_ACCESS_TOKEN != '' }}
         run: supabase functions deploy --project-ref "$REF" --no-verify-jwt --use-api
       - name: Réglages des comptes (adresse du site, inscription sans e-mail de confirmation)
+        if: ${{ env.SUPABASE_ACCESS_TOKEN != '' }}
         run: |
           curl -sf -X PATCH "https://api.supabase.com/v1/projects/$REF/config/auth" \
             -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" -H "Content-Type: application/json" \
@@ -69,8 +76,8 @@ jobs:
       - run: npm ci
       - name: Construire
         env:
-          VITE_SUPABASE_URL: https://${{ vars.SUPABASE_PROJECT_REF }}.supabase.co
-          VITE_SUPABASE_ANON_KEY: ${{ vars.SUPABASE_ANON_KEY }}
+          VITE_SUPABASE_URL: https://${{ env.SB_REF }}.supabase.co
+          VITE_SUPABASE_ANON_KEY: ${{ env.SB_KEY }}
           VITE_APK_URL: https://github.com/${{ github.repository }}/releases/latest/download/mon-coach.apk
         run: npm run build
       - uses: actions/configure-pages@v5
