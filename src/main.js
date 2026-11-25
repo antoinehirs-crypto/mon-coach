@@ -3,7 +3,7 @@ import { parseICS, EXAM } from './ics.js';
 import { unzipSync, strFromU8 } from 'fflate';
 import { buildPlan, DAYS, tmin } from './planner.js';
 import { makeSession } from './sessions.js';
-import { isNative, healthAvailable, connectHealth, syncHealth, readExtras, openHealthSettings } from './health.js';
+import { isNative, healthAvailable, connectHealth, syncHealth, readExtras, openHealthSettings, healthDenied } from './health.js';
 import { computeAuto, AUTO_KEYS, SRC_LABEL } from './auto.js';
 import { getWeather } from './weather.js';
 import { propose, freeWindows } from './propose.js';
@@ -193,12 +193,19 @@ function drawHealth() {
   let note = '';
   if (h?.hrv_ms && b) { const d = (h.hrv_ms - b) / b * 100; note = `VFC ${d >= 0 ? '+' : ''}${Math.round(d)} % vs ta moyenne 7 j. ` + (d < -12 ? 'Récupération incomplète : allège aujourd\'hui.' : d > 8 ? 'Bien récupéré.' : 'Dans ta normale.'); }
   else if (!h) note = last ? 'Dernière donnée reçue le ' + new Date(last.date).toLocaleDateString('fr-FR') + '.' : 'Pas encore de données de sommeil automatiques : voir Profil → Sources. En attendant, le check-in suffit.';
-  $('#hlNote').textContent = note;
+  const hc = S.auto?.hc, f = formeDuJour();
+  const srcTxt = hc?.src && (hc.src.sleep || hc.src.hrv || hc.src.rhr) ? `Sources : sommeil ${hc.src.sleep || '–'} · VFC ${hc.src.hrv || '–'} · FC repos ${hc.src.rhr || '–'}. Lu il y a ${ago(hc.at)}.` : '';
+  const why = f.parts.length ? '<div class="small" style="margin-top:8px">' + f.parts.map(p => `<div class="row sp"><span>${esc(p[0])} <span class="mut">${esc(p[2])}</span></span><b>${p[1]}</b></div>`).join('') + '</div>' : '';
+  $('#hlNote').innerHTML = (f.score != null ? `<b>Forme du jour : ${f.score}/100</b>, calculée toute seule. ` : '') + esc(note) + (srcTxt ? '<br>' + esc(srcTxt) : '') + why;
   // Bouton bien visible pour relier le sommeil
   const fresh = h && h.source === 'health_connect';
   if (isNative()) {
-    $('#hlAct').innerHTML = `<button class="btn ${fresh ? '' : 'pri'} full" id="hlBtn">${fresh ? 'Resynchroniser Health Connect' : 'Connecter Health Connect (sommeil, VFC, FC repos, poids)'}</button>`;
+    const den = (hc?.denied || []).filter(t => ['sleep', 'heartRate', 'heartRateVariability', 'restingHeartRate'].includes(t));
+    const empty = hc && !hc.counts?.sleep;
+    const help = den.length || empty ? `<div class="tip" style="margin-top:0">${den.length ? `<b>Autorisations manquantes</b> : ${esc(den.map(t => ({ sleep: 'sommeil', heartRate: 'fréquence cardiaque', heartRateVariability: 'VFC', restingHeartRate: 'FC au repos' }[t])).join(', '))}. <a href="#" id="hlSet">Ouvrir Health Connect</a> → Applis → Mon Coach → tout autoriser.<br>` : ''}${empty ? `<b>Aucune nuit dans Health Connect.</b> Il faut que ta montre y écrive :<br>• <b>Samsung</b> : Samsung Health → ⋮ → Paramètres → Health Connect → autorise Samsung Health à <i>écrire</i> le sommeil et la fréquence cardiaque.<br>• <b>COROS</b> : appli COROS → Profil → Paramètres → Applis tierces → Health Connect → active.<br>Puis reviens ici : la lecture se fait toute seule à chaque ouverture.` : ''}</div>` : '';
+    $('#hlAct').innerHTML = help + `<button class="btn ${fresh ? '' : 'pri'} full" id="hlBtn">${fresh ? 'Relire Health Connect' : 'Connecter Health Connect (sommeil, VFC, FC repos, poids)'}</button>`;
     $('#hlBtn').onclick = async () => { $('#hlBtn').disabled = true; await nativeHealthSync(false); renderAll(); };
+    const hs = $('#hlSet'); if (hs) hs.onclick = e => { e.preventDefault(); openHealthSettings(); };
   } else if (!h) {
     $('#hlAct').innerHTML = '<button class="btn full" id="hlBtn">Relier mon sommeil automatiquement</button>';
     $('#hlBtn').onclick = healthHowDialog;
@@ -210,9 +217,10 @@ async function nativeHealthSync(silent) {
     const av = await healthAvailable(); if (!av.available) { if (!silent) toast('Health Connect n\'est pas disponible sur ce téléphone.'); return; }
     // demande l'accès (une fois en auto, ou à chaque clic) : sommeil, VFC, FC repos, poids, VO2max
     if (!silent || !S.auto?.perm2) { await connectHealth(); await save('auto', Object.assign({}, S.auto, { perm2: true })); }
-    const n = await syncHealth(user.id); await loadHealth();
-    const ex = await readExtras(); if (Object.keys(ex).length) await save('auto', Object.assign({}, S.auto, ex, { at: Date.now() }));
-    if (!silent) toast(n ? n + ' jours de sommeil/VFC importés depuis Health Connect.' : 'Rien trouvé : vérifie que Samsung Health, Garmin Connect ou COROS partagent le sommeil avec Health Connect.');
+    const r = await syncHealth(user.id); await loadHealth();
+    const ex = await readExtras(), denied = await healthDenied();
+    await save('auto', Object.assign({}, S.auto, ex, { at: Date.now(), hc: { at: Date.now(), src: r.src, counts: r.counts, denied } }));
+    if (!silent) toast(r.n ? `${r.n} jours lus dans Health Connect${r.src.sleep ? ' (sommeil : ' + r.src.sleep + ')' : ''}.` : 'Rien trouvé dans Health Connect : regarde les étapes sous « Nuit et récupération ».');
   } catch (e) { if (!silent) toast('Health Connect : ' + e.message); }
 }
 
@@ -224,18 +232,39 @@ function drawCheckin() {
   $('#checkin').innerHTML = CI.map(([k, l, o]) => o ? `<label>${esc(l)}</label><div class="scale">${[1, 2, 3, 4, 5].map(n => `<button class="chip" data-ci="${k}" data-n="${n}" aria-pressed="${c[k] == n}" aria-label="${esc(l)} ${n} sur 5">${n}</button>`).join('')}</div><div class="small mut row sp"><span>${esc(o[0])}</span><span>${esc(o[1])}</span></div>` : `<label for="ci_${k}">${esc(l)}${autoSleep && c[k] == null ? ' <span class="badge ok">auto</span>' : ''}</label><input id="ci_${k}" type="number" inputmode="decimal" step="0.5" min="0" max="14" value="${esc(c[k] ?? autoSleep)}">`).join('');
   $('#checkin').querySelectorAll('[data-ci]').forEach(b => b.onclick = () => { $('#checkin').querySelectorAll(`[data-ci="${b.dataset.ci}"]`).forEach(x => x.setAttribute('aria-pressed', 'false')); b.setAttribute('aria-pressed', 'true'); });
 }
-function readiness() {
-  const c = S.checkin && S.checkin.date === today() ? S.checkin : null, h = hToday();
-  if (!c && !h) return null;
-  const n = k => Number(c?.[k] || 3), sleepH = c?.sommeil ? +c.sommeil : h?.sleep_min ? h.sleep_min / 60 : 7;
-  let r = Math.min(1, sleepH / 8) * 25 + (n('qualite') - 1) / 4 * 15 + (5 - n('fatigue')) / 4 * 25 + (5 - n('courbatures')) / 4 * 15 + (5 - n('stress')) / 4 * 10 + (n('motivation') - 1) / 4 * 10;
-  const b = hrvBase(); if (h?.hrv_ms && b) r += Math.max(-12, Math.min(8, (h.hrv_ms - b) / b * 60));
-  return Math.max(0, Math.min(100, Math.round(r)));
+/**
+ * Forme du jour /100, automatique : sommeil (durée + phases), VFC et FC repos vs ta moyenne, fraîcheur d'entraînement.
+ * Le check-in (facultatif) vient s'ajouter s'il est rempli. Retourne { score, parts:[[nom, note/100, détail]] }.
+ */
+function formeDuJour() {
+  const c = S.checkin && S.checkin.date === today() ? S.checkin : null, h = hToday(), parts = [];
+  const sleepMin = c?.sommeil ? +c.sommeil * 60 : h?.sleep_min || null;
+  if (sleepMin) {
+    let sc = Math.min(100, Math.max(0, (sleepMin / 60 - 4.5) / (8 - 4.5) * 100));
+    const ph = h && (h.deep_min || h.rem_min) && h.sleep_min ? ((h.deep_min || 0) + (h.rem_min || 0)) / h.sleep_min : null;
+    if (ph != null) sc = sc * 0.75 + Math.min(100, ph / 0.4 * 100) * 0.25;
+    parts.push(['Sommeil', Math.round(sc), fmtH(sleepMin / 60) + (ph != null ? ' · ' + Math.round(ph * 100) + ' % profond + REM' : ''), 35]);
+  }
+  const b = hrvBase();
+  if (h?.hrv_ms && b) { const d = (h.hrv_ms - b) / b * 100; parts.push(['VFC', Math.round(Math.max(0, Math.min(100, 65 + d * 2.5))), `${Math.round(h.hrv_ms)} ms (${d >= 0 ? '+' : ''}${Math.round(d)} % vs 7 j)`, 25]); }
+  const rb = (() => { const v = health.filter(x => x.resting_hr && x.date !== today()).slice(0, 7).map(x => x.resting_hr); return v.length >= 3 ? v.reduce((a, b) => a + b, 0) / v.length : null; })();
+  if (h?.resting_hr && rb) { const d = h.resting_hr - rb; parts.push(['FC repos', Math.round(Math.max(0, Math.min(100, 70 - d * 8))), `${Math.round(h.resting_hr)} bpm (${d >= 0 ? '+' : ''}${Math.round(d)} vs 7 j)`, 15]); }
+  const L = loadStats();
+  if (L) parts.push(['Fraîcheur', Math.round(Math.max(0, Math.min(100, 65 + L.tsb * 2))), 'TSB ' + (L.tsb > 0 ? '+' : '') + L.tsb + ' (Strava)', 15]);
+  if (c && Object.keys(c).some(k => ['qualite', 'fatigue', 'courbatures', 'stress', 'motivation'].includes(k))) {
+    const n = k => Number(c[k] || 3);
+    const sub = ((n('qualite') - 1) / 4 * 15 + (5 - n('fatigue')) / 4 * 30 + (5 - n('courbatures')) / 4 * 20 + (5 - n('stress')) / 4 * 15 + (n('motivation') - 1) / 4 * 20);
+    parts.push(['Ressenti', Math.round(sub), 'check-in du matin', 30]);
+  }
+  if (!parts.length || (parts.length === 1 && parts[0][0] === 'Fraîcheur')) return { score: null, parts };
+  const w = parts.reduce((t, p) => t + p[3], 0);
+  return { score: Math.round(parts.reduce((t, p) => t + p[1] * p[3], 0) / w), parts };
 }
+const readiness = () => formeDuJour().score;
 $('#ciSave').onclick = async () => {
   const c = { date: today(), sommeil: $('#ci_sommeil').value };
   $('#checkin').querySelectorAll('[aria-pressed=true]').forEach(b => c[b.dataset.ci] = Number(b.dataset.n));
-  await save('checkin', c); const r = readiness();
+  await save('checkin', c); const r = readiness() ?? '–';
   $('#ciMsg').textContent = 'Forme du jour : ' + r + '/100. ' + (r < 45 ? 'Journée à alléger : footing très facile ou repos.' : r < 70 ? 'Séance prévue, sans forcer.' : 'Feu vert pour la séance prévue.'); drawRing(); pushSummary();
 };
 function drawRing() {
