@@ -81,9 +81,9 @@ jobs:
           VITE_SUPABASE_ANON_KEY: ${{ env.SB_KEY }}
           VITE_APK_URL: https://github.com/${{ github.repository }}/releases/latest/download/mon-coach.apk
         run: npm run build
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: dist
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
