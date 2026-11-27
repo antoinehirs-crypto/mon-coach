@@ -14,6 +14,7 @@ import { buildWorkout, stepsText, TERRAINS } from './workout.js';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
 import { initErrorLog, logError, flushErrors } from './errlog.js';
+import { plannedReminders, scheduleReminders } from './notify.js';
 
 const $ = s => document.querySelector(s);
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -23,7 +24,7 @@ const FN_BASE = (import.meta.env.VITE_SUPABASE_URL || '') + '/functions/v1/healt
 const SPORTS = ['Course à pied', 'Trail', 'Triathlon', 'Vélo route', 'VTT / Gravel', 'Natation', 'Musculation', 'CrossFit / Hyrox', 'Football', 'Basket', 'Rugby', 'Handball', 'Volley', 'Tennis / Padel', 'Badminton', 'Escalade', 'Ski / Ski de fond', 'Aviron', 'Boxe / Combat', 'Danse', 'Randonnée / Marche', 'Autre'];
 document.querySelectorAll('[data-topo]').forEach(el => el.replaceWith($('#topoTpl').content.cloneNode(true)));
 
-let S = { profile: null, plan: null, checkin: null, agenda: null, cal: null, slots: null, conf: null, hist: null, sources: null, auto: null };
+let S = { profile: null, plan: null, checkin: null, agenda: null, cal: null, slots: null, conf: null, hist: null, sources: null, auto: null, rappels: null };
 let acts365 = [], meteo = null, propDay = 0, propRes = null;
 let user = null, me = null, data = null, health = [], strava = null, isAdmin = false, chat = [];
 
@@ -61,6 +62,7 @@ addEventListener('online', () => { flushDirty(); drawPill(); });
 addEventListener('offline', () => drawPill());
 async function save(k, v) {
   S[k] = v; local.set(k, v); dirty.add(k);
+  if (k === 'plan') { clearTimeout(pending._rap); pending._rap = setTimeout(() => planReminders(), 800); }
   clearTimeout(pending[k]);
   pending[k] = setTimeout(() => push(k), 300);
 }
@@ -1033,6 +1035,27 @@ function drawAdmin() {
     $('#dlg').showModal(); $('#admSave').onclick = async () => { const { error } = await sb.from('profiles').update({ note: $('#admNote').value.trim(), motif: $('#admMotif').value.trim() }).eq('id', m.id); if (error) $('#admSave').textContent = 'Refusé'; else { $('#dlg').close(); loadAdmin(); } };
   });
 }
+/* ---------- rappels (appli Android) ---------- */
+function drawRappels() {
+  const r = S.rappels || {}, box = $('#rapBox'); if (!box) return;
+  if (!isNative()) { box.innerHTML = '<p class="small mut" style="margin:0">Disponible dans l\'appli Android : rappel du check-in le matin et de chaque séance 1 h avant.</p>'; return; }
+  box.innerHTML = `<label class="row small" style="gap:8px;margin:0"><input type="checkbox" id="rapOn" ${r.on ? 'checked' : ''} style="width:22px;min-height:22px"> Activer les rappels</label>
+  <div class="row" style="margin-top:8px"${r.on ? '' : ' hidden'}><div style="flex:1"><label for="rapCi">Check-in du matin</label><input id="rapCi" type="time" step="300" value="${esc(r.checkin || '07:30')}"></div>
+  <label class="row small" style="gap:8px;flex:1;margin:22px 0 0"><input type="checkbox" id="rapSes" ${r.seances !== false ? 'checked' : ''} style="width:22px;min-height:22px"> Séances 1 h avant</label></div>
+  <p class="small mut" id="rapMsg" style="margin:8px 0 0"></p>`;
+  const upd = async ask => { await save('rappels', { on: $('#rapOn').checked, checkin: $('#rapCi')?.value || '07:30', seances: $('#rapSes')?.checked !== false }); drawRappels(); planReminders(ask); };
+  $('#rapOn').onchange = () => upd(true); $('#rapCi') && ($('#rapCi').onchange = () => upd(false)); $('#rapSes') && ($('#rapSes').onchange = () => upd(false));
+}
+async function planReminders(ask = false) {
+  if (!isNative()) return;
+  const p = S.plan, cur = dkey(monday(new Date()));
+  const list = plannedReminders({ plan: p && p.semaine === cur ? p : null, monday: monday(new Date()), prefs: S.rappels, dayOf });
+  try {
+    const r = await scheduleReminders(list, ask);
+    const m = $('#rapMsg'); if (m) m.textContent = !S.rappels?.on ? '' : r.ok ? `${list.length} rappel${list.length > 1 ? 's' : ''} programmé${list.length > 1 ? 's' : ''}.` : 'Notifications refusées : autorise-les dans les réglages Android de Mon Coach.';
+  } catch (e) { logError('rappels', e); }
+}
+
 $('#admQ').oninput = drawAdmin; $('#admF').onchange = drawAdmin;
 
 /* ---------- rendu ---------- */
@@ -1052,16 +1075,16 @@ function drawPill() {
   $('#syncTxt').textContent = syncing ? 'Synchro…' : !navigator.onLine ? 'Hors ligne' : t ? 'Synchro ' + ago(t) : 'À synchroniser';
 }
 function toast(m) { $('#ciMsg').textContent = ''; const el = document.createElement('div'); el.textContent = m; el.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:calc(84px + env(safe-area-inset-bottom,0px));background:#1d2422;color:#f3eee4;padding:10px 16px;border-radius:10px;z-index:50;max-width:90vw;font-size:14px;box-shadow:0 4px 16px rgba(0,0,0,.2)'; document.body.appendChild(el); setTimeout(() => el.remove(), 4500); }
-function renderAll() { drawProps(); drawAgendaCal(); drawAgendaList(); drawProfile(); drawSources(); drawCheckin(); drawRing(); drawHealth(); drawBars(); drawPlan(); drawToday(); drawLoad(); drawLast(); drawPill(); drawAccess(); refreshOnbSrc(); }
+function renderAll() { drawProps(); drawAgendaCal(); drawAgendaList(); drawProfile(); drawSources(); drawCheckin(); drawRing(); drawHealth(); drawBars(); drawPlan(); drawToday(); drawLoad(); drawLast(); drawPill(); drawAccess(); refreshOnbSrc(); drawRappels(); }
 
 async function loadMeteo() { try { meteo = await getWeather(S.profile?.geo); } catch (e) { meteo = null; } drawProps(); }
 async function autoSync(force) {
-  if (syncing) return; syncing = true; drawPill(); loadMeteo();
+  if (syncing) return; syncing = true; busy(true); drawPill(); loadMeteo();
   const STALE = 2 * 36e5, jobs = [];
   if (force || !S.cal || Date.now() - S.cal.at > 30 * 6e4) jobs.push(syncCalendars(true));
   if (strava?.connected && (force || !strava.last_sync || Date.now() - new Date(strava.last_sync).getTime() > STALE)) jobs.push(syncStrava(true));
   if (isNative()) jobs.push(nativeHealthSync(true));
-  await Promise.allSettled(jobs); syncing = false; renderAll(); pushSummary();
+  await Promise.allSettled(jobs); syncing = false; busy(false); renderAll(); pushSummary(); planReminders();
 }
 $('#syncPill').onclick = () => autoSync(true);
 // Retour dans l'appli (onglet ou appli Android remise au premier plan) : relit agendas et Strava s'ils datent.
@@ -1069,10 +1092,12 @@ let lastVis = Date.now();
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && user && Date.now() - lastVis > 10 * 6e4) { lastVis = Date.now(); autoSync(false); } });
 
 /* ---------- démarrage ---------- */
+const busy = on => document.body.classList.toggle('busy', on);
 async function boot() {
-  if (!configured) { openOnb(1); return; }
+  busy(true);
+  if (!configured) { busy(false); openOnb(1); return; }
   const { data: { session } } = await sb.auth.getSession();
-  if (!session) { openOnb(1); return; }
+  if (!session) { busy(false); openOnb(1); return; }
   user = session.user;
   flushErrors();
   const { data: prof } = await sb.from('profiles').select('*').eq('id', user.id).single();
@@ -1082,7 +1107,7 @@ async function boot() {
   if (!S.profile) { await save('profile', Object.assign({ prenom: me.prenom || pend?.prenom || '', sports: pend?.sports || [], onb: 1, depuis: Date.now() })); }
   localStorage.removeItem('mc_pending_profile');
   await Promise.all([stravaStatus(), loadActivities(), loadHealth()]);
-  route(); renderAll();
+  route(); renderAll(); busy(false);
   await handleStravaReturn();
   if ((S.profile.onb || 0) < 3) openOnb(Math.min(3, Math.max(2, (S.profile.onb || 1) + 1)));
   else $('#onb').classList.remove('on');
