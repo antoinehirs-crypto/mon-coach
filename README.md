@@ -16,7 +16,7 @@ Appli d'entraînement multisport, mobile d'abord. Elle croise ta **semaine type*
 | `src/ics.js` | Lecture iCal (récurrences, exceptions), détection présentiel ou visio |
 | `src/health.js` | Lecture Health Connect (appli Android) |
 | `supabase/migrations` | Schéma, droits (RLS), premier inscrit = admin |
-| `supabase/functions` | `strava-connect`, `strava-sync`, `calendar-fetch`, `health-ingest` (Raccourci iPhone), `coach-ai` (Gemini, facultatif) |
+| `supabase/functions` | `strava-connect`, `strava-sync`, `calendar-fetch`, `health-ingest` (Raccourci iPhone), `coach-ai` (coach IA gratuit : Gemini Pro → Gemini Flash → Groq, facultatif) |
 | `.github/workflows` | Déploiement automatique (Supabase + Pages) et APK Android |
 
 ## Développement local

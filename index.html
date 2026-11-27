@@ -45,28 +45,62 @@
   <h2 id="helloT" style="margin-top:4px">Aujourd'hui</h2>
   <p class="mut" id="helloS"></p>
   <div class="card coachnote" id="coachNote" hidden><span class="mono">Message de ton coach</span><div id="coachNoteTxt"></div></div>
-  <div class="card"><span class="mono">Séances du jour</span><div id="todaySes"></div></div>
-  <div class="card" id="propCard"><div class="row sp"><span class="mono">Propositions de séance</span><div class="seg" id="propDay" role="group" aria-label="Jour" style="grid-template-columns:1fr 1fr;margin:0;min-width:190px"><button data-pd="0" aria-pressed="true">Aujourd'hui</button><button data-pd="1" aria-pressed="false">Demain</button></div></div>
-    <div id="propCtx" class="pctx"></div><div id="propList"></div><p class="small mut" id="propMeteo" style="margin:8px 0 0"></p></div>
-  <div class="card"><div class="row sp"><span class="mono">Nuit et récupération</span><span class="badge n" id="hlBadge">Saisie</span></div><div class="tiles t4" id="hlTiles"></div><p class="small mut" id="hlNote" style="margin:8px 0 0"></p><div id="hlAct" style="margin-top:10px"></div></div>
-  <div class="card"><div class="row sp"><span class="mono">Charge d'entraînement</span><span class="badge n">Estimé · Strava</span></div>
-    <div class="tiles t4" id="loadTiles"></div><svg class="spark" id="spark" aria-label="Charge quotidienne sur 6 semaines"></svg>
-    <p class="small mut" id="loadNote" style="margin:6px 0 0"></p></div>
-  <div class="card" id="lastCard" hidden><div class="row sp"><span class="mono" id="lastMeta"></span><span class="badge ok" id="lastPr" hidden>Record perso</span></div><h3 id="lastName" style="margin-top:4px"></h3><div class="tiles t4" id="lastTiles"></div></div>
-  <div class="card"><div class="row sp"><span class="mono">Ressenti (facultatif)</span><span class="small mut">affine la forme</span></div><div id="checkin"></div>
-    <button class="btn pri full" id="ciSave" style="margin-top:14px">Enregistrer ma forme</button><p class="small mut" id="ciMsg"></p></div>
+  <div class="card"><div class="row sp"><span class="mono">Ta séance du jour</span><a class="small" href="#coach">Changer</a></div><div id="todaySes"></div></div>
+  <div class="card" id="raceCard" hidden><span class="mono">Prochaines courses</span><div id="raceBox"></div></div>
+  <div class="card"><div class="row sp"><span class="mono">Forme du jour</span><a class="small" href="#suivi">Détails</a></div><p id="homeForme" style="margin:4px 0 0"></p></div>
   <div class="card"><span class="mono">Agenda du jour</span><div id="todayEv"></div></div>
 </section>
 
-<section class="view" id="v-semaine">
-  <span class="mono">Plan de la semaine</span>
-  <h2 id="planTitle" style="margin-top:4px">Ma semaine</h2>
-  <p class="mut" id="planSum">Pas encore de plan.</p>
-  <button class="btn pri full" id="genBtn">Générer ma semaine</button>
-  <p class="err" id="genErr"></p>
-  <div class="tiles" id="kpis" style="grid-template-columns:repeat(3,minmax(0,1fr));margin:14px 0"></div>
-  <div id="week"></div>
-  <div id="tips" class="card small" hidden></div>
+<section class="view" id="v-coach">
+  <span class="mono">Coach</span>
+  <h2 style="margin-top:4px">Tes séances</h2>
+  <div class="seg" id="cTabs" role="group" aria-label="Rubrique"><button data-ct="jour" aria-pressed="true">Séance du jour</button><button data-ct="semaine" aria-pressed="false">Ma semaine</button><button data-ct="chat" aria-pressed="false">Question</button></div>
+
+  <div id="ct-jour">
+    <div class="row sp"><div class="seg" id="propDay" role="group" aria-label="Jour" style="grid-template-columns:1fr 1fr;margin:0;min-width:200px"><button data-pd="0" aria-pressed="true">Aujourd'hui</button><button data-pd="1" aria-pressed="false">Demain</button></div><span class="badge n" id="cSrc">Règles</span></div>
+    <div class="card coachana" id="cAnaBox" style="margin-top:12px"><span class="mono">L'analyse du coach</span><p id="cAna" style="margin:4px 0 0"></p><div id="propCtx" class="pctx"></div></div>
+    <span class="mono">Sport</span><div class="chips" id="cSport" style="margin:6px 0 4px"></div>
+    <div id="propList"></div>
+    <div class="card" style="margin-top:12px"><label for="cReq" style="margin-top:0">Je veux une séance spécifique</label>
+      <div class="row"><input id="cReq" placeholder="Ex : seuil en piscine 25 m, 50 min · sortie longue vélo 2 h · côtes" style="flex:1 1 220px"><button class="btn sm pri" id="cReqBtn">Proposer</button></div>
+      <p class="small mut" id="cReqMsg" style="margin:6px 0 0"></p></div>
+    <div id="cEdit"></div>
+    <p class="small mut" id="propMeteo" style="margin:8px 0 0"></p>
+  </div>
+
+  <div id="ct-semaine" hidden>
+    <h3 id="planTitle">Ma semaine</h3>
+    <p class="mut" id="planSum">Pas encore de plan.</p>
+    <button class="btn pri full" id="genBtn">Générer ma semaine</button>
+    <p class="err" id="genErr"></p>
+    <div class="tiles" id="kpis" style="grid-template-columns:repeat(3,minmax(0,1fr));margin:14px 0"></div>
+    <div id="week"></div>
+    <div id="tips" class="card small" hidden></div>
+  </div>
+
+  <div id="ct-chat" hidden>
+    <p class="mut" id="coachIntro">Il connaît ton profil, ta forme, ton agenda et ton plan. Conseils sportifs uniquement, jamais un avis médical.</p>
+    <div class="chips" id="sugg"></div>
+    <textarea id="q" rows="3" placeholder="Ta question…" style="margin-top:12px" aria-label="Ta question"></textarea>
+    <button class="btn pri full" id="askBtn" style="margin-top:10px">Demander</button>
+    <div id="ans"></div>
+  </div>
+</section>
+
+<section class="view" id="v-suivi">
+  <span class="mono">Suivi</span>
+  <h2 style="margin-top:4px">Charge, forme et bilan</h2>
+  <div class="card"><div class="row sp"><span class="mono">Charge d'entraînement</span><span class="badge n">Estimé · Strava</span></div>
+    <div class="tiles t4" id="loadTiles"></div><svg class="spark" id="spark" aria-label="Charge quotidienne sur 6 semaines"></svg>
+    <p class="small mut" id="loadNote" style="margin:6px 0 0"></p></div>
+  <div class="card"><div class="row sp"><span class="mono">Nuit et récupération</span><span class="badge n" id="hlBadge">Saisie</span></div><div class="tiles t4" id="hlTiles"></div><p class="small mut" id="hlNote" style="margin:8px 0 0"></p><div id="hlAct" style="margin-top:10px"></div></div>
+  <div class="card"><div class="row sp"><span class="mono">Ressenti (facultatif)</span><span class="small mut">affine la forme</span></div><div id="checkin"></div>
+    <button class="btn pri full" id="ciSave" style="margin-top:14px">Enregistrer ma forme</button><p class="small mut" id="ciMsg"></p></div>
+  <div class="card" id="lastCard" hidden><div class="row sp"><span class="mono" id="lastMeta"></span><span class="badge ok" id="lastPr" hidden>Record perso</span></div><h3 id="lastName" style="margin-top:4px"></h3><div class="tiles t4" id="lastTiles"></div></div>
+  <div class="card"><div class="row sp"><span class="mono">Volume Strava · 6 semaines</span><button class="btn sm" id="syncBtn">Synchroniser</button></div>
+    <div class="legend" style="margin:6px 0 10px"><span style="--c:var(--swim)">Natation</span><span style="--c:var(--bike)">Vélo</span><span style="--c:var(--run)">Course</span><span style="--c:var(--oth)">Autre</span></div>
+    <div class="bars" id="bars"><p class="mut small">Pas encore de données Strava.</p></div>
+    <p class="small mut" id="syncInfo"></p></div>
   <div class="card"><span class="mono">Bilan de la semaine</span><p class="small mut" style="margin-top:0">Charge réalisée, ressentis, progrès et ajustements pour la suite.</p><button class="btn full" id="bilanBtn">Faire le bilan</button><div id="bilan"></div></div>
 </section>
 
@@ -85,23 +119,9 @@
   <div id="agList"></div>
 </section>
 
-<section class="view" id="v-coach">
-  <span class="mono">Coach</span>
-  <h2 style="margin-top:4px">Pose ta question</h2>
-  <p class="mut" id="coachIntro">Il connaît ton profil, ta forme, ton agenda et ton plan. Conseils sportifs uniquement, jamais un avis médical.</p>
-  <div class="chips" id="sugg"></div>
-  <textarea id="q" rows="3" placeholder="Ta question…" style="margin-top:12px" aria-label="Ta question"></textarea>
-  <button class="btn pri full" id="askBtn" style="margin-top:10px">Demander</button>
-  <div id="ans"></div>
-</section>
-
 <section class="view" id="v-profil">
   <div class="row sp"><div><span class="mono">Profil</span><h2 style="margin-top:4px">Moi</h2></div><button class="btn sm" id="editBtn">Compléter mon profil</button></div>
   <div class="card" style="margin-top:14px"><span class="mono">Sources connectées</span><div id="srcBox"></div></div>
-  <div class="card"><div class="row sp"><span class="mono">Volume Strava · 6 semaines</span><button class="btn sm" id="syncBtn">Synchroniser</button></div>
-    <div class="legend" style="margin:6px 0 10px"><span style="--c:var(--swim)">Natation</span><span style="--c:var(--bike)">Vélo</span><span style="--c:var(--run)">Course</span><span style="--c:var(--oth)">Autre</span></div>
-    <div class="bars" id="bars"><p class="mut small">Pas encore de données Strava.</p></div>
-    <p class="small mut" id="syncInfo"></p></div>
   <div class="prof" id="prof"></div>
   <div class="card" style="margin-top:14px"><span class="mono">Partager à un ami</span><p class="small" style="margin-top:0">Chacun crée son compte : plan, agenda et données restent privés.</p>
     <div class="row"><button class="btn pri" id="shareBtn">Copier le lien</button><span class="small mut" id="shareMsg"></span></div></div>
@@ -120,10 +140,10 @@
 </main>
 
 <nav class="tabs" id="tabs" aria-label="Navigation">
-  <a href="#aujourdhui"><svg viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>Aujourd'hui</a>
-  <a href="#semaine"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/></svg>Semaine</a>
-  <a href="#agenda"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 13h3v4H8z"/></svg>Agenda</a>
-  <a href="#coach"><svg viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20.5l1.4-5A8 8 0 1 1 21 12z"/></svg>Coach</a>
+  <a href="#aujourdhui"><svg viewBox="0 0 24 24"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/></svg>Accueil</a>
+  <a href="#coach"><svg viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>Coach</a>
+  <a href="#agenda"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/></svg>Agenda</a>
+  <a href="#suivi"><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>Suivi</a>
   <a href="#profil"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>Profil</a>
   <a href="#admin" id="admTab" hidden><svg viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM22 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/></svg>Admin</a>
 </nav>

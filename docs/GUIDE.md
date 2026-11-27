@@ -32,8 +32,13 @@ L'adresse de l'appli sera : `https://antoinehirs-crypto.github.io/mon-coach/`
 3. ⚠️ Une nouvelle appli Strava n'accepte qu'**un seul athlète** (toi). Pour tes amis, demande l'augmentation de capacité à Strava : le lien se trouve sur la même page, ou passe par https://developers.strava.com/ (« Developer Program »). C'est gratuit, mais la réponse prend quelques jours.
 
 ## 4. (Facultatif) Coach IA gratuit
-L'appli génère ton plan sans IA, avec un planificateur intégré qui suit les règles du coach. Pour activer aussi l'onglet « Coach » (questions libres et bilan rédigé) :
-- Crée une clé gratuite sur https://aistudio.google.com/apikey (→ `GEMINI_API_KEY`).
+Sans IA, l'onglet Coach fonctionne déjà avec les règles intégrées (3 niveaux, demande libre, modifications). Avec une IA, les séances sont rédigées par un « coach expert » qui lit ta charge, tes courses et tes examens. Tout est gratuit, dans cet ordre de repli :
+1. **Gemini 2.5 Pro**, puis **Gemini 2.5 Flash** : crée une clé sur https://aistudio.google.com/apikey (→ `GEMINI_API_KEY`). Choisis un projet Google **sans facturation activée** : tu restes ainsi sur l'offre gratuite et rien ne peut être facturé.
+2. **Groq** (Llama 3.3 70B) : crée un compte sur https://console.groq.com puis une clé dans *API Keys* (→ `GROQ_API_KEY`).
+3. Si aucune IA ne répond (quota du jour atteint), l'appli reprend ses règles intégrées.
+
+Chaque utilisateur est limité à 25 demandes IA par jour (variable `AI_DAILY_LIMIT` pour changer).
+Option payante, désactivée par défaut : `ANTHROPIC_API_KEY` (API Claude, facturée à part de l'abonnement Claude) passerait en premier, plafonnée à `CLAUDE_MONTHLY_USD` dollars par mois (5 par défaut).
 
 ## 5. Coller les clés dans GitHub
 Dans le dépôt, va dans **Settings → Secrets and variables → Actions**.
@@ -52,6 +57,7 @@ Onglet **Secrets** → *New repository secret* :
 | `STRAVA_CLIENT_ID` | étape 3.2 |
 | `STRAVA_CLIENT_SECRET` | étape 3.2 |
 | `GEMINI_API_KEY` | facultatif, étape 4 |
+| `GROQ_API_KEY` | facultatif, étape 4 |
 
 ## 6. Lancer le déploiement
 1. Onglet **Actions → « Déployer Mon Coach » → Run workflow**. Compte 2 à 3 minutes : deux coches vertes = c'est en ligne.

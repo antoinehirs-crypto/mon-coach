@@ -51,9 +51,15 @@ export function propose(c) {
   if (c.inf?.examens?.length) { block.push('jour d\'examen'); ctx.push('Examen aujourd\'hui : ' + c.inf.examens.join(', ')); }
   if (c.inf?.veille_examen?.length) { block.push('examen demain'); ctx.push('Demain : ' + c.inf.veille_examen.join(', ') + ' → rien de dur'); }
   if (c.inf?.charge === 'chargée') block.push('grosse journée de cours');
-  const race = p.date ? Math.round((new Date(p.date + 'T09:00') - d0) / 864e5) : null;
-  if (race != null && race >= 0 && race <= 2) { block.push('objectif dans ' + race + ' j'); }
-  if (race != null && race >= 0) ctx.push(`Objectif : ${p.objectif || 'course'} ${race === 0 ? 'aujourd\'hui' : 'dans ' + race + ' j'}`);
+  // compétitions : objectif du profil + courses repérées dans l'agenda
+  const races = (c.races || []).map(r => Object.assign({}, r, { j: Math.round((new Date(r.date + 'T00:00') - d0) / 864e5) })).filter(r => r.j >= 0).sort((a, b) => a.j - b.j);
+  const race = races.length ? races[0].j : p.date ? Math.round((new Date(p.date + 'T09:00') - d0) / 864e5) : null;
+  const raceName = races.length ? races[0].titre : (p.objectif || 'course');
+  let taper = false;
+  if (race === 0) { block.push('jour de course'); ctx.push(`Jour de course : ${raceName}`); }
+  else if (race != null && race >= 1 && race <= 2) { block.push(race === 1 ? 'course demain' : 'course dans 2 jours'); ctx.push(`${raceName} ${race === 1 ? 'demain' : 'dans 2 jours'} : on garde des jambes`); }
+  else if (race != null && race >= 3 && race <= 10) { taper = true; ctx.push(`Affûtage : ${raceName} dans ${race} j (volume réduit, intensité courte)`); }
+  else if (race != null && race > 0) ctx.push(`Prochaine course : ${raceName} dans ${race} j`);
 
   // --- séances d'avant et d'après
   const acts = c.acts || [];
@@ -89,7 +95,7 @@ export function propose(c) {
   const disc = disciplinesOf(p.sports).filter(x => x !== 'renfo');
   const tally = {}; disc.forEach(k => tally[k] = 0);
   last7.forEach(a => { const g = grp(a.sport_type); if (g in tally) tally[g] += (a.moving_time || 0) / 60; });
-  const obj = (p.objectif || '') + ' ' + (p.chrono || '');
+  const obj = (p.objectif || '') + ' ' + (p.chrono || '') + ' ' + (races[0] && races[0].j <= 70 ? races[0].titre : '');
   const goal = /natation|nage/i.test(obj) ? 'swim' : /vélo|cyclo|fondo|cyclisme/i.test(obj) ? 'bike' : /triathlon|ironman|70\.3|duathlon/i.test(obj) ? null : /km|course|marathon|semi|trail|cross|run/i.test(obj) ? 'run' : null;
   if (goal && goal in tally && race != null && race >= 0 && race <= 70) tally[goal] -= 90;
   yActs.forEach(a => { const g = grp(a.sport_type); if (g in tally) tally[g] += 45; });
@@ -104,6 +110,8 @@ export function propose(c) {
     if (c.inf?.veille_examen?.length) x = Math.min(x, 45);
     if (weekLeft != null) x = Math.min(x, Math.max(30, weekLeft));
     if (mid) x = Math.min(x, 45);
+    if (taper) x = Math.round(x * 0.75);
+    if (race === 1 || race === 2) x = Math.min(x, 35);
     return Math.max(20, Math.round(x / 5) * 5);
   };
 
@@ -137,11 +145,23 @@ export function propose(c) {
   const options = [];
   if (!wins.length) return { contexte: ctx, options: [{ sport: 'repos', titre: 'Pas de créneau', duree_min: 0, intensite: '', detail: 'Ton agenda est plein (trajets compris). Profite-en pour bien dormir : c\'est aussi de l\'entraînement.', quand: '', lieu: '', meteo: '', raisons: ['Aucun créneau de 30 min libre'] }] };
 
+  // Jour de course : rien d'autre que la course
+  if (race === 0) return { contexte: ctx, options: [{ sport: 'repos', titre: 'Jour de course', duree_min: 0, intensite: '', detail: `C'est le jour J (${raceName}). Échauffement 15-20 min avant le départ : footing très facile, gammes, 3-4 accélérations. Pas d'autre séance aujourd'hui.`, quand: '', lieu: '', meteo: '', raisons: ['On garde toute l\'énergie pour la course'] }], dispo: best, bloque: block, races };
+  // Veille de course : activation courte
+  if (race === 1 && ranked.length) {
+    const k = /natation|swim/i.test(raceName) ? 'swim' : /vélo|cyclo/i.test(raceName) ? 'bike' : 'run';
+    const o = make(disc.includes(k) ? k : ranked[0], 'facile', 25, ['Veille de course : 20-25 min faciles + quelques accélérations pour réveiller les jambes']);
+    o.titre = 'Activation veille de course'; o.type = 'activation';
+    options.push(o);
+    options.push({ sport: 'repos', titre: 'Repos complet', duree_min: 0, intensite: '', detail: 'Repos, hydratation, repas riche en glucides le soir, préparation du sac.', quand: '', lieu: '', meteo: '', raisons: ['Option tout aussi valable la veille d\'une course'] });
+    return { contexte: ctx, options, dispo: best, bloque: block, races };
+  }
+
   // Forme basse : récupération d'abord
   if (low) {
     options.push(Object.assign(make(ranked.includes('swim') ? 'swim' : ranked[0], 'facile', cap(30), ['Forme basse ce matin : on récupère, rien qui fatigue']), { titre: 'Récupération active', intensite: 'Z1' }));
     options.push({ sport: 'repos', titre: 'Repos complet', duree_min: 0, intensite: '', detail: 'Repos. 10 min de mobilité douce le soir si tu veux, et couche-toi tôt.', quand: '', lieu: '', meteo: '', raisons: ['Le repos fait partie du plan quand la forme est basse'] });
-    return { contexte: ctx, options };
+    return { contexte: ctx, options, dispo: best, bloque: block, races };
   }
 
   // 1) la séance prévue au plan (adaptée si besoin), sinon la meilleure séance du jour
@@ -180,5 +200,5 @@ export function propose(c) {
   sh.titre = shortKind === 'renfo' ? 'Renfo / prévention' : 'Version courte : ' + sh.titre;
   options.push(sh);
 
-  return { contexte: ctx, options: options.slice(0, 3) };
+  return { contexte: ctx, options: options.slice(0, 3), dispo: best, bloque: block, races, taper };
 }

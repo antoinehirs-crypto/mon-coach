@@ -29,14 +29,16 @@ const total = steps => steps.reduce((t, s) => t + (s.repeat ? s.repeat * total(s
 const fmtMin = m => m >= 1 ? (Number.isInteger(m) ? m + ' min' : Math.floor(m) + ' min ' + p2(Math.round(m % 1 * 60))) : Math.round(m * 60) + ' s';
 const stepLine = s => s.repeat ? `${s.repeat} × ( ${s.steps.map(stepLine).join(' + ')} )` : `${s.dist ? s.dist + ' m' : fmtMin(s.min)} ${s.label}${s.cible ? ' · ' + s.cible : ''}${s.lap ? ' (fin : appui sur Lap)' : ''}`;
 const icuOf = steps => steps.map(s => s.repeat ? `\n${s.repeat}x\n${s.steps.map(x => x.icu).join('\n')}\n` : s.icu).join('\n').replace(/\n{3,}/g, '\n\n').trim();
-const icuMin = m => Number.isInteger(m) ? m + 'm' : Math.floor(m) + 'm' + Math.round(m % 1 * 60) + 's';
+const icuMin = m => { const t = Math.round(m * 60), a = Math.floor(t / 60), b = t % 60; return a ? a + 'm' + (b ? b + 's' : '') : b + 's'; };
 
 function pack(sport, type, titre, intensite, wu, main, cd, extra = {}) {
+  if (wu) wu.role = 'wu'; if (cd) cd.role = 'cd';
   const steps = [wu, ...main, cd].filter(Boolean);
   const min = Math.round(total(steps));
   const detail = `Échauffement : ${stepLine(wu)}\nCorps : ${main.map(stepLine).join('\n  puis ')}\nRetour au calme : ${stepLine(cd)}\nDurée totale : ${min} min`;
+  const tpl = titre.includes('{T}') ? titre : null;
   titre = titre.replace('{T}', min);
-  return Object.assign({ sport, type, titre, intensite, duree_min: min, steps, detail, icu: icuOf(steps), icuType: { run: 'Run', bike: 'Ride', swim: 'Swim' }[sport] || null, dur: type === 'qualite' }, extra);
+  return Object.assign({ sport, type, titre, tpl, intensite, duree_min: min, steps, detail, icu: icuOf(steps), icuType: { run: 'Run', bike: 'Ride', swim: 'Swim' }[sport] || null, dur: type === 'qualite' }, extra);
 }
 
 /* ---------------- COURSE ---------------- */
@@ -160,3 +162,82 @@ export function makeSession(kind, type, min, refs, lvl, seed = 0) {
   return s;
 }
 export { stepLine };
+
+/* ---------------- édition d'une séance (après le choix du niveau) ---------------- */
+const copy = o => JSON.parse(JSON.stringify(o));
+const ROLE = { wu: 'Échauffement : ', cd: 'Retour au calme : ', add: 'En plus : ' };
+const meters = steps => steps.reduce((t, x) => t + (x.repeat ? x.repeat * meters(x.steps) : x.dist || 0), 0);
+
+/** Recalcule durée, texte et format montre après une modification des blocs. */
+export function repack(s) {
+  s = copy(s);
+  const min = Math.round(total(s.steps));
+  const m = meters(s.steps);
+  s.duree_min = min;
+  s.detail = s.steps.map((x, i) => (ROLE[x.role] || (i === 0 ? '' : '• ')) + stepLine(x)).join('\n') + `\nDurée totale : ${min} min` + (s.sport === 'swim' && m ? `\nDistance : ${m} m` : '');
+  s.titre = (s.tpl ? s.tpl.replace('{T}', min) : String(s.titre || '')).replace(/\(\d+(\.\d)? km\)/, s.sport === 'swim' && m ? `(${(m / 1000).toFixed(1)} km)` : '$&');
+  s.icu = s.icuType ? icuOf(s.steps.filter(x => x.icu || x.repeat)) : null;
+  if (s.indoor) delete s.indoor; // la variante home trainer ne correspond plus
+  return s;
+}
+
+/** Change la durée (ou la distance) d'un bloc simple, en gardant le format montre cohérent. */
+export function setStepMin(st, m) {
+  m = Math.max(1 / 6, m);
+  if (st.dist) {
+    const d = Math.max(25, Math.round(st.dist * m / st.min / 25) * 25);
+    st.icu = (st.icu || '').replace(/\d+mtr/, d + 'mtr'); st.min = +(st.min * d / st.dist).toFixed(2); st.dist = d;
+  } else {
+    st.min = Math.round(m * 6) / 6;
+    st.icu = (st.icu || '').replace(/(\s)(\d+m\d+s|\d+m|\d+s)(?=\s|$)/, '$1' + icuMin(st.min));
+  }
+  return st;
+}
+
+/** Blocs à ajouter en un clic. */
+export const EXTRAS = {
+  gainage: () => B('gainage : planche 45 s, latéral 30 s/côté, pont fessier 15, superman 12 (×2)', 10, '', '', { role: 'add' }),
+  accel: sport => sport === 'bike' ? R(4, [B('sprint assis', 1 / 4, 'très fort', '- Sprint 15s 150% intensity=interval'), B('souple', 1.75, 'facile', '- Souple 1m45s 50% intensity=recovery')], 'sprints')
+    : R(4, [B('ligne droite rapide et relâchée', 1 / 3, 'vite, pas à fond', '- Accélération 20s 85-92% HR intensity=interval'), B('retour en trottinant', 2 / 3, '', '- Trot 40s 60-70% HR intensity=recovery')], 'accélérations'),
+  educ: sport => sport === 'swim' ? R(4, [B('éducatif (rattrapé, poings fermés, 6-1-6)', 1, 'souple', '- Éducatif 50mtr Z1 Pace', { dist: 50 })]) : B('gammes : montées de genoux, talons-fesses, pas chassés', 8, '', '- Gammes 8m 60-70% HR', { role: 'add' }),
+  calme: () => B('retour au calme supplémentaire', 5, 'très facile', '- Retour au calme 5m 55-65% HR intensity=cooldown', { role: 'add' }),
+  etir: () => B('étirements et mobilité', 10, '', '', { role: 'add' }),
+};
+export function addExtra(s, key) {
+  s = copy(s); const b = EXTRAS[key](s.sport);
+  if (s.sport === 'bike' && b.icu) b.icu = b.icu.replace(/ \d+-\d+% HR/, ' 50-60%');
+  const cdAt = s.steps.findIndex(x => x.role === 'cd');
+  if (key === 'accel' || (key === 'educ' && s.sport === 'swim')) s.steps.splice(cdAt >= 0 ? cdAt : s.steps.length, 0, b);
+  else if (key === 'educ') s.steps.splice(1, 0, b);
+  else s.steps.push(b);
+  return repack(s);
+}
+
+/** Séance rédigée par l'IA -> même format que la bibliothèque (texte, montre). */
+export function fromAI(o) {
+  const tgt = x => !x.ref || x.ref === 'none' || !x.hi ? '' : x.ref === 'hr' ? ` ${x.lo}-${x.hi}% HR` : x.ref === 'ftp' ? ` ${x.lo}-${x.hi}%` : ` ${x.lo}-${x.hi}% Pace`;
+  const step = x => {
+    const dist = +x.dist_m || 0, min = +x.min || (dist ? dist / 100 * 2 : 5);
+    const lbl = String(x.label || 'bloc').replace(/[\n-]/g, ' ').slice(0, 60);
+    const it = ['warmup', 'cooldown', 'interval', 'recovery'].includes(x.intensity) ? ' intensity=' + x.intensity : '';
+    return B(String(x.label || ''), +min.toFixed(2), String(x.cible || ''), `- ${lbl} ${dist ? dist + 'mtr' : icuMin(Math.round(min * 12) / 12)}${tgt(x)}${it}`, Object.assign(dist ? { dist } : {}, x.intensity === 'warmup' ? { role: 'wu' } : x.intensity === 'cooldown' ? { role: 'cd' } : {}));
+  };
+  const steps = (o.blocs || []).map(b => (+b.repeat || 1) > 1 || (b.steps || []).length > 1 ? R(Math.max(1, +b.repeat || 1), (b.steps || []).map(step)) : step((b.steps || [])[0] || {}));
+  const s = repack({ sport: o.sport, type: o.type || 'facile', titre: o.titre, intensite: o.intensite || '', steps, icuType: { run: 'Run', bike: 'Ride', swim: 'Swim' }[o.sport] || null, dur: o.type === 'qualite', conseil: o.conseil || '' });
+  if (!s.icuType) s.icu = null;
+  return s;
+}
+
+/** Fichier .zwo (Zwift, MyWhoosh, TrainerRoad…) pour une séance vélo. */
+export function toZwo(s) {
+  const pct = icu => { const m = String(icu || '').match(/(\d+)-(\d+)%(?! HR| Pace)/) || String(icu || '').match(/(\d+)%(?! HR| Pace)/); return m ? [m[1] / 100, (m[2] || m[1]) / 100] : [0.6, 0.6]; };
+  const sec = st => Math.max(5, Math.round(st.min * 60));
+  const one = st => { const [a, b] = pct(st.icu); return st.role === 'wu' ? `<Warmup Duration="${sec(st)}" PowerLow="${a}" PowerHigh="${b}"/>` : st.role === 'cd' ? `<Cooldown Duration="${sec(st)}" PowerLow="${b}" PowerHigh="${a}"/>` : `<SteadyState Duration="${sec(st)}" Power="${((a + b) / 2).toFixed(2)}"/>`; };
+  const body = s.steps.filter(st => st.repeat || st.icu).map(st => {
+    if (!st.repeat) return one(st);
+    if (st.steps.length === 2) { const [on, off] = st.steps; return `<IntervalsT Repeat="${st.repeat}" OnDuration="${sec(on)}" OffDuration="${sec(off)}" OnPower="${(pct(on.icu).reduce((x, y) => x + y) / 2).toFixed(2)}" OffPower="${(pct(off.icu).reduce((x, y) => x + y) / 2).toFixed(2)}"/>`; }
+    return Array(st.repeat).fill(st.steps.map(one).join('\n    ')).join('\n    ');
+  }).join('\n    ');
+  const x = t => String(t).replace(/[<&"]/g, c => ({ '<': '&lt;', '&': '&amp;', '"': '&quot;' }[c]));
+  return `<workout_file>\n  <author>Mon Coach</author>\n  <name>${x(s.titre)}</name>\n  <description>${x(s.detail || '')}</description>\n  <sportType>bike</sportType>\n  <workout>\n    ${body}\n  </workout>\n</workout_file>\n`;
+}
