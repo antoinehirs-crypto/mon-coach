@@ -72,6 +72,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Tests (planificateur, séances, agenda, repères)
+        run: npm test
       - name: Construire
         env:
           VITE_SUPABASE_URL: https://${{ env.SB_REF }}.supabase.co

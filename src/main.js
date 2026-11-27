@@ -13,6 +13,7 @@ import { geocode, loop, trackRoute, gpx } from './routes.js';
 import { buildWorkout, stepsText, TERRAINS } from './workout.js';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
+import { initErrorLog, logError, flushErrors } from './errlog.js';
 
 const $ = s => document.querySelector(s);
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -38,16 +39,30 @@ const fmtH = h => Math.floor(h) + 'h' + p2(Math.round(h % 1 * 60));
 
 /* ---------- stockage : Supabase (privé, RLS) + cache local ---------- */
 const local = { get(k) { try { return JSON.parse(localStorage.getItem('mc_' + (user?.id || '') + '_' + k)); } catch (e) { return null; } }, set(k, v) { try { localStorage.setItem('mc_' + (user?.id || '') + '_' + k, JSON.stringify(v)); } catch (e) { } } };
+// Clés modifiées pas encore enregistrées sur le serveur (hors ligne, réseau coupé) : renvoyées au retour du réseau.
+const dirty = { get() { return new Set(local.get('_dirty') || []); }, add(k) { const d = this.get(); d.add(k); local.set('_dirty', [...d]); }, del(k) { const d = this.get(); d.delete(k); local.set('_dirty', [...d]); } };
 async function loadAll() {
   for (const k of Object.keys(S)) S[k] = local.get(k);
-  const { data: rows } = await sb.from('kv').select('key,value');
-  (rows || []).forEach(r => { if (r.key in S) { S[r.key] = r.value; local.set(r.key, r.value); } });
+  const { data: rows, error } = await sb.from('kv').select('key,value');
+  if (error) { logError('chargement', error); return; }
+  const d = dirty.get();
+  (rows || []).forEach(r => { if (r.key in S && !d.has(r.key)) { S[r.key] = r.value; local.set(r.key, r.value); } });
+  flushDirty();
 }
 const pending = {};
+async function push(k) {
+  if (!user) return;
+  const { error } = await sb.from('kv').upsert({ user_id: user.id, key: k, value: S[k], updated_at: new Date().toISOString() });
+  if (error) { if (navigator.onLine) logError('sauvegarde ' + k, error); return false; }
+  dirty.del(k); return true;
+}
+function flushDirty() { if (navigator.onLine) dirty.get().forEach(k => k in S && push(k)); }
+addEventListener('online', () => { flushDirty(); drawPill(); });
+addEventListener('offline', () => drawPill());
 async function save(k, v) {
-  S[k] = v; local.set(k, v);
+  S[k] = v; local.set(k, v); dirty.add(k);
   clearTimeout(pending[k]);
-  pending[k] = setTimeout(() => sb.from('kv').upsert({ user_id: user.id, key: k, value: v, updated_at: new Date().toISOString() }).then(({ error }) => { if (error) console.warn(error); }), 300);
+  pending[k] = setTimeout(() => push(k), 300);
 }
 
 /* ---------- navigation ---------- */
@@ -69,7 +84,7 @@ async function syncCalendars(silent) {
   const all = [], errs = [];
   for (const u of urls) {
     try { const r = await fn('calendar-fetch', { body: { url: u.url } }); all.push(...parseICS(r.ics, u.id)); }
-    catch (e) { errs.push((u.name || 'Agenda') + ' : ' + e.message); }
+    catch (e) { errs.push((u.name || 'Agenda') + ' : ' + e.message); logError('agenda ' + (u.name || ''), e); }
   }
   await save('cal', { evs: all, at: Date.now(), errs });
   if (!silent) toast(errs.length ? errs.join(' · ') : all.length + ' événements lus.');
@@ -125,7 +140,7 @@ async function stravaStatus() { try { strava = await fn('strava-connect', { meth
 async function syncStrava(silent) {
   if (!strava?.connected) return;
   try { const r = await fn('strava-sync', { body: {} }); await loadActivities(); await stravaStatus(); if (!silent) toast(r.count + ' activités lues sur Strava.'); }
-  catch (e) { if (!silent) toast('Strava : ' + e.message); }
+  catch (e) { if (e.code !== 'limite_strava') logError('synchro Strava', e); if (!silent) toast('Strava : ' + e.message); }
 }
 async function connectStrava(force) {
   try { const r = await fn('strava-connect', { method: 'GET', query: Object.assign({ action: 'url', redirect: APP_URL }, force ? { force: '1' } : {}) }); location.href = r.url; }
@@ -238,7 +253,7 @@ async function nativeHealthSync(silent) {
       await save('auto', Object.assign({}, S.auto, { perm2: true, permAsk: today() }));
     }
     let r, err = null;
-    try { r = await syncHealth(user.id); } catch (e) { err = e.message || String(e); r = { n: 0, src: {}, counts: {} }; }
+    try { r = await syncHealth(user.id); } catch (e) { err = e.message || String(e); logError('Health Connect', e); r = { n: 0, src: {}, counts: {} }; }
     await loadHealth();
     const ex = await readExtras().catch(() => ({}));
     await save('auto', Object.assign({}, S.auto, ex, { at: Date.now(), hc: { at: Date.now(), src: r.src, counts: r.counts, denied, err, n: r.n } }));
@@ -760,7 +775,7 @@ $('#bilanBtn').onclick = async () => {
     (pct < 70 ? 'semaine incomplète, on reconduit le même volume la semaine prochaine plutôt que d\'augmenter.' : rpe && rpe > 7 ? 'semaine faite mais dure : on garde le volume et on vérifie que les séances faciles restent faciles.' : loadRule().allegee_obligatoire ? 'semaine allégée la prochaine fois (3 semaines de charge enchaînées).' : 'bien joué, +5 à +10 % de volume possible la semaine prochaine.');
   $('#bilan').innerHTML = `<div class="msg">${esc(txt)}</div>`;
   $('#bilanBtn').disabled = true;
-  try { const t = await ai(`Fais le bilan de la semaine de cet athlète en français, 180 mots max, 3 titres courts : Charge, Progrès et ressentis, Ajustements.\n${RULES}\nPrévu ${pm} min, fait ${dm} min.\nDonnées : ${JSON.stringify(ctx())}`); $('#bilan').innerHTML = `<div class="msg">${esc(t)}</div>`; } catch (e) { }
+  try { const t = await ai(`Fais le bilan de la semaine de cet athlète en français, 180 mots max, 3 titres courts : Charge, Progrès et ressentis, Ajustements.\n${RULES}\nPrévu ${pm} min, fait ${dm} min.\nDonnées : ${JSON.stringify(ctx())}`); $('#bilan').innerHTML = `<div class="msg">${esc(t)}</div>`; } catch (e) { if (e.code !== 'ia_non_configuree') logError('bilan IA', e); }
   $('#bilanBtn').disabled = false;
 };
 
@@ -986,8 +1001,16 @@ async function loadAdmin() {
   if (!isAdmin) return;
   const { data: rows, error } = await sb.from('profiles').select('id,email,prenom,sports,role,status,motif,note,summary,created_at,last_seen').order('last_seen', { ascending: false });
   if (error) { $('#admList').innerHTML = '<p class="err">Lecture des inscrits impossible.</p>'; return; }
-  MEM = rows || []; drawAdmin();
+  MEM = rows || []; drawAdmin(); loadErrors();
 }
+async function loadErrors() {
+  const { data: rows, error } = await sb.from('client_errors').select('id,user_id,at,lieu,message,version,appareil').order('at', { ascending: false }).limit(50);
+  const box = $('#admErr');
+  if (error) { box.innerHTML = '<p class="small mut">Journal indisponible (schéma pas encore appliqué ?).</p>'; return; }
+  $('#admErrClear').hidden = !rows.length;
+  box.innerHTML = rows.length ? rows.map(r => { const m = MEM.find(x => x.id === r.user_id); return `<div class="ev"><time>${esc(new Date(r.at).toLocaleString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}</time><span><b>${esc(r.lieu)}</b> · ${esc(r.message)}<br><span class="small mut">${esc(m?.prenom || m?.email || 'inconnu')} · ${esc(r.version)}</span></span></div>`; }).join('') : '<p class="small mut">Aucune erreur. Tout roule.</p>';
+}
+$('#admErrClear').onclick = async () => { const { error } = await sb.from('client_errors').delete().gte('id', 0); if (error) toast('Effacement refusé.'); loadErrors(); };
 function drawAdmin() {
   const q = $('#admQ').value.trim().toLowerCase(), f = $('#admF').value, now = Date.now(), seen = m => new Date(m.last_seen).getTime();
   const act = MEM.filter(m => now - seen(m) < 7 * 864e5).length, sus = MEM.filter(m => m.status === 'suspendu').length;
@@ -1051,6 +1074,7 @@ async function boot() {
   const { data: { session } } = await sb.auth.getSession();
   if (!session) { openOnb(1); return; }
   user = session.user;
+  flushErrors();
   const { data: prof } = await sb.from('profiles').select('*').eq('id', user.id).single();
   me = prof || {}; isAdmin = me.role === 'admin'; $('#admTab').hidden = !isAdmin;
   await loadAll();
@@ -1076,6 +1100,7 @@ async function handleEmailLink() {
     $('#npwOk').onclick = async () => { const { error } = await sb.auth.updateUser({ password: $('#npw').value }); if (error) $('#npwErr').textContent = error.message; else $('#dlg').close(); };
   }
 }
+initErrorLog(sb, () => user?.id, __BUILD__ + (isNative() ? ' · Android' : ' · web'));
 route();
 (async () => { if (sb) await handleEmailLink(); boot(); })();
 if ('serviceWorker' in navigator && !isNative()) navigator.serviceWorker.register('sw.js').catch(() => { });
