@@ -95,7 +95,7 @@ export function buildPlan(a) {
   const plan = [];
   qualDays.forEach((d, k) => plan.push({ d, type: 'qualite', kind: rot[(k + 1) % rot.length] === 'swim' && rot.length > 1 ? rot[(k + 2) % rot.length] : rot[(k + 1) % rot.length] }));
   if (longDay != null) plan.push({ d: longDay, type: 'long', kind: rot.includes('bike') ? 'bike' : rot[0] });
-  if (rot.includes('run') && rot.includes('bike') && longDay === 6 && free(5)) plan.push({ d: 5, type: 'long', kind: 'run' });
+  if (rot.includes('run') && rot.includes('bike') && longDay === 6 && free(5)) plan.push({ d: 5, type: 'long', kind: 'run', optional: true });
   const order = [0, 2, 4, 1, 3, 5, 6];
   let r = 0;
   while (plan.length < nSess && r < 40) {
@@ -116,8 +116,9 @@ export function buildPlan(a) {
   const flex = plan.filter(x => !x.fixedMin);
   const wsum = flex.reduce((t, x) => t + weight(x), 0) || 1;
   const avail = Math.max(0, restLeft - plan.filter(x => x.fixedMin).reduce((t, x) => t + x.fixedMin, 0));
-  plan.forEach(x => {
-    let min = x.fixedMin || Math.round(avail * weight(x) / wsum / 5) * 5;
+  const fixedUsed = used;
+  const build = scale => plan.map(x => {
+    let min = x.fixedMin || Math.round(avail * weight(x) / wsum * scale / 5) * 5;
     const cap = x.type === 'long' ? (x.kind === 'bike' ? 240 : 150) : x.kind === 'swim' ? 75 : 90;
     const floor = { run: { facile: 35, qualite: 50, long: 70 }, bike: { facile: 45, qualite: 60, long: 90 }, swim: { facile: 40, qualite: 40, long: 45 } }[x.kind]?.[x.type] || 30;
     min = Math.max(floor, Math.min(cap, min));
@@ -125,8 +126,24 @@ export function buildPlan(a) {
     if (day.veille_examen.length) min = Math.min(min, 45);
     const s = session(x.kind, x.type, min, p, wk + x.d);
     s.pourquoi = x.type === 'qualite' ? 'Séance clé de la semaine (les 20 % d’intensité).' : x.type === 'long' ? 'Le volume en endurance construit ton moteur.' : day.veille_examen.length ? 'Veille d’examen : court et facile, pour garder le rythme sans fatigue.' : 'Endurance facile : c’est la base du polarisé.';
-    jours[x.d].seances.push(s);
+    return { x, s };
   });
+  // Les blocs arrondis et les durées minimales peuvent dépasser le volume visé :
+  // on réduit d'abord toutes les séances, puis on retire les footings les plus courts.
+  const sum = list => fixedUsed + list.reduce((t, e) => t + (+e.s.duree_min || 0), 0);
+  const limit = Math.max(target * 1.05, fixedUsed);
+  let scale = 1, built = build(scale);
+  for (let k = 0; k < 4 && sum(built) > limit; k++) {
+    scale *= Math.max(.5, (limit - fixedUsed) / Math.max(1, sum(built) - fixedUsed));
+    built = build(scale);
+  }
+  while (sum(built) > limit) {
+    const easy = built.filter(e => e.x.type === 'facile' || e.x.optional).sort((a, b) => a.s.duree_min - b.s.duree_min);
+    if (!easy.length || sum(built) - easy[0].s.duree_min < target * .85) break;
+    built = built.filter(e => e !== easy[0]);
+  }
+  built.forEach(({ x, s }) => jours[x.d].seances.push(s));
+  const keptPlan = built.map(e => e.x);
 
   jours.forEach(j => { if (!j.seances.length) j.seances.push({ sport: 'repos', titre: 'Repos', duree_min: 0, intensite: '', detail: '', pourquoi: j._info.examens.length ? 'Jour d’examen.' : 'Récupération.' }); delete j._info; });
   const total = jours.reduce((t, j) => t + j.seances.reduce((u, s) => u + (+s.duree_min || 0), 0), 0);
@@ -137,7 +154,7 @@ export function buildPlan(a) {
   if (!(p.refs && (p.refs.fcmax || p.refs.seuil || p.refs.ftp || p.refs.css))) conseils.push('Ajoute tes repères (FC max, seuil, FTP, CSS) dans ton profil pour des zones précises.');
   return {
     titre: allegee ? 'Semaine allégée' : `Semaine de ${Math.floor(total / 60)} h ${String(total % 60).padStart(2, '0')}`,
-    resume: `${plan.filter(x => x.type === 'qualite').length} séance(s) clé(s), le reste en endurance facile. Volume visé ${Math.round(target)} min${a.rule?.minutes_max ? ' (+10 % max par rapport à la semaine dernière)' : ''}.`,
+    resume: `${keptPlan.filter(x => x.type === 'qualite').length} séance(s) clé(s), le reste en endurance facile. Volume visé ${Math.round(target)} min${a.rule?.minutes_max ? ' (+10 % max par rapport à la semaine dernière)' : ''}.`,
     allegee, jours, conseils: conseils.slice(0, 3), source: 'planificateur',
   };
 }
