@@ -1,8 +1,9 @@
 import { sb, fn, configured } from './supa.js';
 import { parseICS, EXAM } from './ics.js';
 import { unzipSync, strFromU8 } from 'fflate';
-import { buildPlan, DAYS, tmin } from './planner.js';
-import { makeSession } from './sessions.js';
+import { buildPlan, DAYS, tmin, disciplinesOf } from './planner.js';
+import { makeSession, repack, setStepMin, addExtra, fromAI, toZwo } from './sessions.js';
+import { findRaces, threeLevels, parseRequest, editByText, aiFacts, NIVEAUX, SPORT_NOM } from './coach.js';
 import { isNative, healthAvailable, connectHealth, syncHealth, readExtras, openHealthSettings, healthDenied } from './health.js';
 import { computeAuto, AUTO_KEYS, SRC_LABEL } from './auto.js';
 import { getWeather } from './weather.js';
@@ -22,7 +23,7 @@ const FN_BASE = (import.meta.env.VITE_SUPABASE_URL || '') + '/functions/v1/healt
 const SPORTS = ['Course à pied', 'Trail', 'Triathlon', 'Vélo route', 'VTT / Gravel', 'Natation', 'Musculation', 'CrossFit / Hyrox', 'Football', 'Basket', 'Rugby', 'Handball', 'Volley', 'Tennis / Padel', 'Badminton', 'Escalade', 'Ski / Ski de fond', 'Aviron', 'Boxe / Combat', 'Danse', 'Randonnée / Marche', 'Autre'];
 document.querySelectorAll('[data-topo]').forEach(el => el.replaceWith($('#topoTpl').content.cloneNode(true)));
 
-let S = { profile: null, plan: null, checkin: null, agenda: null, cal: null, slots: null, conf: null, hist: null, sources: null, auto: null };
+let S = { coachai: null, profile: null, plan: null, checkin: null, agenda: null, cal: null, slots: null, conf: null, hist: null, sources: null, auto: null };
 let acts365 = [], meteo = null, propDay = 0, propRes = null;
 let user = null, me = null, data = null, health = [], strava = null, isAdmin = false, chat = [];
 
@@ -51,9 +52,19 @@ async function save(k, v) {
 }
 
 /* ---------- navigation ---------- */
-const VIEWS = ['aujourdhui', 'semaine', 'agenda', 'coach', 'profil', 'admin'];
+const VIEWS = ['aujourdhui', 'coach', 'agenda', 'suivi', 'profil', 'admin'];
+let cTab = 'jour';
+function setCTab(t) {
+  cTab = t;
+  document.querySelectorAll('#cTabs [data-ct]').forEach(b => b.setAttribute('aria-pressed', b.dataset.ct === t));
+  ['jour', 'semaine', 'chat'].forEach(k => { const el = document.getElementById('ct-' + k); if (el) el.hidden = k !== t; });
+}
+document.querySelectorAll('#cTabs [data-ct]').forEach(b => b.onclick = () => { setCTab(b.dataset.ct); if (b.dataset.ct === 'jour') drawProps(); });
 function route() {
-  const h = (location.hash || '').slice(1); const id = VIEWS.includes(h) && (h !== 'admin' || isAdmin) ? h : 'aujourdhui';
+  let h = (location.hash || '').slice(1);
+  if (h === 'semaine') { h = 'coach'; setCTab('semaine'); }
+  const id = VIEWS.includes(h) && (h !== 'admin' || isAdmin) ? h : 'aujourdhui';
+  if (id === 'coach' && user && cTab === 'jour') setTimeout(drawProps, 0);
   document.querySelectorAll('.view').forEach(v => v.classList.toggle('on', v.id === 'v-' + id));
   document.querySelectorAll('#tabs a').forEach(a => a.toggleAttribute('aria-current', a.getAttribute('href') === '#' + id));
   if (id === 'admin') loadAdmin();
@@ -393,7 +404,7 @@ function editSlot(sl, host, view) {
 }
 const ST_LBL = { 'oui': ['Possible', 'ok'], 'confirmé': ['Confirmé', 'ok'], 'peut-être': ['Peut-être', 'n'], 'non': ['Impossible', ''], 'annulé': ['Annulé', ''] };
 function drawAgendaCal() {
-  document.querySelectorAll('.seg button').forEach(b => b.setAttribute('aria-pressed', b.dataset.wk === calView));
+  document.querySelectorAll('#v-agenda .seg button').forEach(b => b.setAttribute('aria-pressed', b.dataset.wk === calView));
   drawCal($('#calBox'), calView);
   $('#calLegend').textContent = calView === 'type' ? (slots().length ? slots().length + ' créneau(x) récurrent(s). Touche un créneau pour le modifier.' : 'Aucun créneau pour l\'instant : touche une case vide.') : 'En gris : tes cours (hachuré = visio). En couleur : tes créneaux. Barré = impossible, « ? » = peut-être, à confirmer ci-dessous.';
   const box = $('#stCard');
@@ -407,7 +418,7 @@ function drawAgendaCal() {
   }).join('');
   $('#stList').querySelectorAll('[data-cf]').forEach(b => b.onclick = async () => { const c = Object.assign({}, S.conf || {}); const w = Object.assign({}, c[b.dataset.wk] || {}); if (w[b.dataset.id] === b.dataset.cf) delete w[b.dataset.id]; else w[b.dataset.id] = b.dataset.cf; c[b.dataset.wk] = w; await save('conf', c); drawAgendaCal(); drawToday(); });
 }
-document.querySelectorAll('.seg button').forEach(b => b.onclick = () => { calView = b.dataset.wk; drawAgendaCal(); });
+document.querySelectorAll('#v-agenda .seg button').forEach(b => b.onclick = () => { calView = b.dataset.wk; drawAgendaCal(); });
 
 /* ---------- plan ---------- */
 const HARD = /seuil|vma|fraction|interval|z4|z5|tempo|intens|sprint|match|compét|sweet|lourd|css/i;
@@ -451,7 +462,7 @@ function sesCard(p, i, k, s, inf) {
 function drawPlan() {
   const p = S.plan, cur = dkey(monday(new Date()));
   $('#genBtn').textContent = p && p.semaine === cur ? 'Régénérer ma semaine' : 'Générer ma semaine';
-  if (!p) { $('#week').innerHTML = ''; $('#kpis').innerHTML = ''; $('#planSum').textContent = 'Pas encore de plan. Ajoute ta semaine type et complète ton profil, puis génère ta semaine.'; $('#todaySes').innerHTML = '<p class="small mut">Pas encore de plan cette semaine. <a href="#semaine">Génère-le</a>.</p>'; $('#tips').hidden = true; return; }
+  if (!p) { $('#week').innerHTML = ''; $('#kpis').innerHTML = ''; $('#planSum').textContent = 'Pas encore de plan. Ajoute ta semaine type et complète ton profil, puis génère ta semaine.'; $('#todaySes').innerHTML = '<p class="small mut">Pas encore de séance aujourd\'hui. <a href="#coach">Choisis-la avec ton coach</a> (3 niveaux au choix).</p>'; $('#tips').hidden = true; return; }
   const old = p.semaine !== cur;
   if (!old && !p._t) { assignTimes(p); save('plan', p); }
   $('#planTitle').textContent = old ? 'Semaine passée' : (p.titre || 'Ma semaine'); $('#planSum').textContent = (old ? 'Ce plan date de la semaine du ' + p.semaine + '. Génère la nouvelle. ' : '') + (p.resume || '');
@@ -464,7 +475,7 @@ function drawPlan() {
   }).join('');
   $('#tips').hidden = !(p.conseils || []).length; $('#tips').innerHTML = '<h3>Conseils</h3>' + (p.conseils || []).map(c => '• ' + esc(c)).join('<br>');
   const ti = (new Date().getDay() + 6) % 7;
-  $('#todaySes').innerHTML = old ? '<p class="small mut">Nouvelle semaine : <a href="#semaine">génère ton plan</a>.</p>' : (dayOf(p, ti).seances || []).map((s, k) => sesCard(p, ti, k, s, dayInfo(new Date(), L))).join('') || '<p class="small mut">Rien de prévu.</p>';
+  $('#todaySes').innerHTML = old ? '<p class="small mut">Nouvelle semaine : <a href="#coach">choisis ta séance du jour</a> ou <a href="#semaine">génère ton plan</a>.</p>' : (dayOf(p, ti).seances || []).map((s, k) => sesCard(p, ti, k, s, dayInfo(new Date(), L))).join('') || '<p class="small mut">Rien de prévu. <a href="#coach">Choisis ta séance</a>.</p>';
   document.querySelectorAll('.ses[role=button]').forEach(el => { el.onclick = () => openSes(el.dataset.id); el.onkeydown = e => { if (e.key === 'Enter') openSes(el.dataset.id); }; });
 }
 function openSes(id) {
@@ -521,53 +532,156 @@ function assignTimes(plan) {
   plan._t = 1;
 }
 const planDayOf = date => { const p = S.plan; if (!p || p.semaine !== dkey(monday(date))) return null; return dayOf(p, (new Date(date).getDay() + 6) % 7).seances || []; };
-function drawProps() {
-  if (!user || !$('#propList')) return;
-  const now = new Date(), date = addD(new Date(now.getFullYear(), now.getMonth(), now.getDate()), propDay), L = allEvents(), inf = dayInfo(date, L);
+/* ---------- onglet Coach : séance du jour en 3 niveaux, demande libre, modification ---------- */
+let cSport = null, cReq = '', cLv = null, cAna = '', cSrc = 'regles', cPick = null, cBusy = false, aiOff = false, cDate = null;
+const SPORT_CLS = s => ['swim', 'bike', 'run', 'renfo', 'repos'].includes(s) ? s : '';
+const IA_NOM = { claude: 'Coach IA · Claude', 'gemini-pro': 'Coach IA · Gemini Pro', gemini: 'Coach IA · Gemini', groq: 'Coach IA · Llama (Groq)', regles: 'Règles intégrées' };
+const coachDate = () => { const now = new Date(); return addD(new Date(now.getFullYear(), now.getMonth(), now.getDate()), propDay); };
+function coachRules(date) {
+  const now = new Date(), L = allEvents(), inf = dayInfo(date, L);
   const off = monday(date) > monday(now) ? 1 : 0, h = propDay === 0 ? hToday() : null, b = hrvBase();
-  propRes = propose({
+  return propose({
     date, isToday: propDay === 0, nowMin: now.getHours() * 60 + now.getMinutes(), ev: inf.ev, fixed: weekStatus(off).filter(x => x.date === dkey(date)),
     inf, planPrev: planDayOf(addD(date, -1)), planToday: planDayOf(date), planNext: planDayOf(addD(date, 1)), acts: acts365,
     readiness: propDay === 0 ? readiness() : null, hrvDelta: h?.hrv_ms && b ? (h.hrv_ms - b) / b * 100 : null, tsb: loadStats()?.tsb ?? null,
-    profile: effProfile(), weather: meteo,
+    profile: effProfile(), weather: meteo, races: findRaces(L, S.profile),
   });
+}
+/** Séance de base selon le sport choisi et la demande libre. */
+function coachBase(res) {
+  const b0 = res.options[0];
+  if (cReq) { const r = parseRequest(cReq, cSport || (b0.sport !== 'repos' ? b0.sport : null)); return { sport: r.sport, type: res.bloque.length && r.type === 'qualite' ? 'facile' : r.type, duree_min: r.min, quand: b0.quand, lieu: b0.lieu, meteo: b0.meteo, raisons: ['Ta demande : « ' + cReq + ' »'].concat(res.bloque.length && r.type === 'qualite' ? ['Version sans intensité : ' + res.bloque.join(', ')] : []) }; }
+  if (cSport && cSport !== b0.sport) { const alt = res.options.find(o => o.sport === cSport); return alt || { sport: cSport, type: b0.sport === 'repos' ? 'facile' : (b0.type || 'facile'), duree_min: b0.duree_min || 45, quand: b0.quand, lieu: cSport === 'swim' ? 'Piscine' : b0.lieu, meteo: b0.meteo, raisons: [...(b0.raisons || []), 'Sport choisi par toi'] }; }
+  return b0;
+}
+const LIEU = { swim: 'Piscine', renfo: 'Maison ou salle' };
+const withLieu = b => Object.assign({}, b, LIEU[b.sport] ? { lieu: LIEU[b.sport], meteo: '' } : {});
+const aiKey = date => dkey(date) + '|' + (cSport || '') + '|' + cReq;
+function coachFacts(date, res, base) {
+  const L = loadStats(), rule = loadRule(), wk = data?.weeks || {};
+  const plan = S.plan && S.plan.semaine === dkey(monday(date)) ? (S.plan.jours || []).map(j => ({ jour: j.jour, seances: (j.seances || []).map(s => s.sport === 'repos' ? 'repos' : `${s.titre} (${s.duree_min} min)`) })) : null;
+  return aiFacts({
+    date: dkey(date), profile: effProfile(), contexte: res.contexte, base: base.sport ? base : null, dispo: res.dispo, bloque: res.bloque, races: res.races,
+    exams: allEvents().filter(e => e.x && e.s > Date.now() && !findRaces([e], {}).length).slice(0, 6).map(e => ({ date: dkey(e.s), titre: e.t })),
+    load: L ? { atl: L.atl, ctl: L.ctl, tsb: L.tsb, heures_7j: +L.h7.toFixed(1) } : null, readiness: propDay === 0 ? readiness() : null,
+    weeks: Object.keys(wk).sort().slice(-6).map(k => ({ semaine: k, natation: +wk[k].swim.toFixed(1), velo: +wk[k].bike.toFixed(1), course: +wk[k].run.toFixed(1), autre: +wk[k].oth.toFixed(1) })),
+    recent: data?.recent || [], plan, rule: { semaines_depuis_allegement: rule.semaines_depuis_allegement, allegee_obligatoire: rule.allegee_obligatoire, minutes_max_semaine: rule.minutes_max },
+  });
+}
+const fixQuand = (q, min) => { const m = /^(\d\d):(\d\d)/.exec(q || ''); if (!m || !min) return q || ''; const a = +m[1] * 60 + +m[2], b = a + +min; return q.slice(0, 5) + '-' + p2(Math.floor(b / 60) % 24) + ':' + p2(b % 60); };
+function decorate(list, base) { return list.map((s, i) => Object.assign(s, { niveau: s.niveau || NIVEAUX[i]?.k, pour: NIVEAUX[i]?.pour, quand: fixQuand(base.quand, s.duree_min), lieu: base.lieu, meteo: base.meteo, raisons: s.raisons || base.raisons || [] })); }
+async function coachAI(force) {
+  if (aiOff || cBusy || !user) return;
+  const date = coachDate(), key = aiKey(date), cache = S.coachai || {};
+  if (!force && cache[key]) return;
+  const res = coachRules(date), base = coachBase(res);
+  cBusy = true; drawCoachHead();
+  try {
+    const r = await fn('coach-ai', { body: { task: 'seance', facts: coachFacts(date, res, base), demande: cReq } });
+    const list = (r.seances || []).slice(0, 3).map(o => Object.assign(fromAI(o), { niveau: o.niveau, raisons: o.pourquoi }));
+    if (list.length) { const c = {}; Object.keys(cache).filter(k => k.startsWith(dkey(new Date()).slice(0, 7))).slice(-6).forEach(k => c[k] = cache[k]); c[key] = { seances: list, analyse: r.analyse || '', ia: r.ia, at: Date.now() }; await save('coachai', c); }
+  } catch (e) {
+    if (e.code === 'ia_non_configuree') aiOff = true;
+    else $('#cReqMsg').textContent = 'Coach IA indisponible (' + (e.code === 'quota_ia' ? 'limite du jour atteinte' : e.message) + ') : séances des règles intégrées.';
+  }
+  cBusy = false; drawProps();
+}
+function drawCoachHead() {
+  $('#cSrc').textContent = cBusy ? 'Le coach réfléchit…' : IA_NOM[cSrc] || 'Coach IA';
+  $('#cSrc').className = 'badge ' + (cSrc === 'regles' ? 'n' : 'ok');
+}
+function drawProps() {
+  if (!user || !$('#propList')) return;
+  const date = coachDate(); if (cDate !== dkey(date)) { cDate = dkey(date); cPick = null; }
+  const res = coachRules(date), base = withLieu(coachBase(res)), cached = (S.coachai || {})[aiKey(date)];
+  propRes = res;
   document.querySelectorAll('#propDay [data-pd]').forEach(x => x.setAttribute('aria-pressed', +x.dataset.pd === propDay));
-  $('#propCtx').innerHTML = propRes.contexte.map(t => `<span>${esc(t)}</span>`).join('');
-  $('#propList').innerHTML = propRes.options.map((o, i) => `<div class="prop ${['swim', 'bike', 'run', 'renfo', 'repos'].includes(o.sport) ? o.sport : ''}">
-    <div class="row sp" style="align-items:flex-start"><div><b>${i === 0 && o.sport !== 'repos' ? 'Conseillé · ' : ''}${esc(o.titre)}</b><div class="small mut">${o.duree_min ? esc(o.duree_min) + ' min · ' + esc(o.intensite) : 'Repos'}${o.quand ? ' · ' + esc(o.quand) : ''}${o.lieu ? ' · ' + esc(o.lieu) : ''}</div>${o.meteo ? `<div class="small mut">Météo : ${esc(o.meteo)}</div>` : ''}</div></div>
-    <ul class="why">${(o.raisons || []).map(r => `<li>${esc(r)}</li>`).join('')}</ul>
-    ${o.indoor ? `<div class="small mut">Ou home trainer : ${esc(o.indoor.titre)} · ${esc(o.indoor.duree_min)} min</div>` : ''}
-    <div class="row" style="margin-top:8px;gap:8px">${o.sport !== 'repos' || o.titre === 'Repos complet' ? `<button class="btn sm${i === 0 ? ' pri' : ''}" data-pick="${i}">Choisir</button>` : ''}${o.detail ? `<button class="btn sm" data-see="${i}">Voir${o.icu ? ' et envoyer ⌚' : ''}</button>` : ''}${o.sport === 'run' ? `<button class="btn sm" data-run="${i}">Parcours 🗺️</button>` : ''}</div></div>`).join('');
-  $('#propMeteo').innerHTML = meteo ? `Météo ${esc(meteo.nom)} (Open-Meteo). <a href="#" id="propGeo">Utiliser ma position</a>` : 'Météo indisponible pour le moment.';
+  // sports proposés
+  const disc = [...new Set([...disciplinesOf(S.profile?.sports), 'renfo'])];
+  $('#cSport').innerHTML = `<button class="chip" data-sp="" aria-pressed="${!cSport}">Conseillé</button>` + disc.map(k => `<button class="chip" data-sp="${k}" aria-pressed="${cSport === k}">${esc(SPORT_NOM[k])}</button>`).join('');
+  $('#cSport').querySelectorAll('[data-sp]').forEach(b => b.onclick = () => { cSport = b.dataset.sp || null; cPick = null; drawProps(); coachAI(false); });
+  $('#propCtx').innerHTML = res.contexte.map(t => `<span>${esc(t)}</span>`).join('');
+  const rest = base.sport === 'repos';
+  if (cached) { cLv = decorate(JSON.parse(JSON.stringify(cached.seances)), base); cAna = cached.analyse; cSrc = cached.ia; }
+  else { cLv = rest ? null : threeLevels(base, effProfile(), { dispo: res.dispo, bloque: res.bloque, seed: Math.floor(date.getTime() / 864e5) }); cSrc = 'regles'; cAna = rest ? '' : (base.raisons || []).join('. ') + '.'; }
+  $('#cAna').textContent = cAna || (rest ? base.detail || '' : '');
+  drawCoachHead();
+  if (!cLv) {
+    $('#propList').innerHTML = res.options.map((o, i) => `<div class="prop ${SPORT_CLS(o.sport)}"><b>${esc(o.titre)}</b><div class="small mut">${o.duree_min ? esc(o.duree_min) + ' min · ' + esc(o.intensite) : 'Repos'}</div><p class="small" style="white-space:pre-wrap;margin:6px 0 0">${esc(o.detail || '')}</p><ul class="why">${(o.raisons || []).map(r => `<li>${esc(r)}</li>`).join('')}</ul>${o.sport === 'repos' && o.titre !== 'Pas de créneau' ? `<button class="btn sm" data-rest="${i}" style="margin-top:6px">Noter le repos</button>` : `<button class="btn sm" data-alt="${i}" style="margin-top:6px">Choisir</button>`}</div>`).join('') + '<p class="small mut">Tu peux quand même demander une séance précise ci-dessous, ou choisir un sport.</p>';
+    $('#propList').querySelectorAll('[data-rest]').forEach(b => b.onclick = () => addToPlan(res.options[+b.dataset.rest], date));
+    $('#propList').querySelectorAll('[data-alt]').forEach(b => b.onclick = () => { cPick = JSON.parse(JSON.stringify(res.options[+b.dataset.alt])); drawEdit(); });
+  } else {
+    $('#propList').innerHTML = `<div class="levels">${cLv.map((o, i) => `<div class="prop lvl ${SPORT_CLS(o.sport)}${cPick && cPick.niveau === o.niveau ? ' on' : ''}">
+      <div class="row sp"><span class="mono">${esc(NIVEAUX[i].nom)}</span>${i === 1 ? '<span class="badge ok">Conseillé</span>' : ''}</div>
+      <b>${esc(o.titre)}</b><div class="small mut">${esc(o.duree_min)} min · ${esc(o.intensite)}${o.quand ? ' · ' + esc(o.quand) : ''}${o.lieu ? ' · ' + esc(o.lieu) : ''}</div>
+      <p class="small mut" style="margin:4px 0 0">${esc(o.pour || '')}</p>
+      <details><summary>Le détail</summary><p class="small" style="white-space:pre-wrap;margin:6px 0 0">${esc(o.detail)}</p>${o.conseil ? `<p class="small">${esc(o.conseil)}</p>` : ''}</details>
+      <button class="btn sm${i === 1 ? ' pri' : ''} full" data-lv="${i}" style="margin-top:8px">Je prends celle-ci</button></div>`).join('')}</div>
+      ${(cLv[1]?.raisons || []).length ? `<ul class="why small">${cLv[1].raisons.map(r => `<li>${esc(r)}</li>`).join('')}</ul>` : ''}
+      ${cSrc === 'regles' ? '' : `<button class="btn sm" id="cAgain" style="margin-top:6px">↻ Autre proposition du coach</button>`}`;
+    $('#propList').querySelectorAll('[data-lv]').forEach(b => b.onclick = () => { cPick = JSON.parse(JSON.stringify(cLv[+b.dataset.lv])); drawProps(); drawEdit(); setTimeout(() => $('#cEdit')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50); });
+    const ag = $('#cAgain'); if (ag) ag.onclick = () => coachAI(true);
+  }
+  $('#propMeteo').innerHTML = meteo ? `Météo ${esc(meteo.nom)} (Open-Meteo). <a href="#" id="propGeo">Utiliser ma position</a>` : '';
   const g = $('#propGeo'); if (g) g.onclick = e => { e.preventDefault(); navigator.geolocation?.getCurrentPosition(async pos => { await save('profile', Object.assign({}, S.profile, { geo: { lat: +pos.coords.latitude.toFixed(3), lon: +pos.coords.longitude.toFixed(3), nom: 'ta position' } })); loadMeteo(); toast('Météo réglée sur ta position.'); }, () => toast('Position refusée : on garde Versailles.')); };
-  document.querySelectorAll('[data-pick]').forEach(btn => btn.onclick = () => pickProp(+btn.dataset.pick, date));
-  document.querySelectorAll('[data-run]').forEach(btn => btn.onclick = () => runDialog(propRes.options[+btn.dataset.run], date));
-  document.querySelectorAll('[data-see]').forEach(btn => btn.onclick = () => propDialog(propRes.options[+btn.dataset.see], date));
+  drawEdit();
+  if (!cached && !rest && location.hash.startsWith('#coach')) coachAI(false);
 }
-document.querySelectorAll('#propDay [data-pd]').forEach(x => x.onclick = () => { propDay = +x.dataset.pd; drawProps(); });
-function propDialog(o, date) {
-  const ind = o.indoor;
-  $('#dlgBody').innerHTML = `<h3>${esc(o.titre)}</h3><p class="mut small">${o.quand ? '<b>' + esc(o.quand) + '</b> · ' : ''}${esc(o.duree_min)} min · ${esc(o.intensite)}${o.lieu ? ' · ' + esc(o.lieu) : ''}</p>
-    ${o.icu ? '<div id="sesWatch" style="margin-bottom:10px"></div>' : ''}
-    ${ind ? `<div class="seg" id="sesVar" style="grid-template-columns:1fr 1fr;margin:0 0 8px"><button data-v="out" aria-pressed="${o.lieu !== 'Intérieur'}">Dehors</button><button data-v="in" aria-pressed="${o.lieu === 'Intérieur'}">Home trainer</button></div>` : ''}
-    <div id="sesBody"></div>`;
-  const show = v => { const x = v === 'in' ? ind : o; $('#sesBody').innerHTML = `${v === 'in' ? `<p><b>${esc(ind.titre)}</b> · ${esc(ind.duree_min)} min</p>` : ''}<p style="white-space:pre-wrap;margin-top:0">${esc(x.detail)}</p>${x.conseil ? `<p class="small">${esc(x.conseil)}</p>` : ''}`; if (x.icu) watchBox($('#sesWatch'), { titre: x.titre, icu: x.icu, type: x.icuType || 'Run', texte: x.detail }, date); };
-  show(ind && o.lieu === 'Intérieur' ? 'in' : 'out');
-  const sv = $('#sesVar'); if (sv) sv.querySelectorAll('[data-v]').forEach(b => b.onclick = () => { sv.querySelectorAll('[data-v]').forEach(x => x.setAttribute('aria-pressed', x === b)); show(b.dataset.v); });
-  if (!$('#dlg').open) $('#dlg').showModal();
+document.querySelectorAll('#propDay [data-pd]').forEach(x => x.onclick = () => { propDay = +x.dataset.pd; cPick = null; drawProps(); });
+$('#cReqBtn').onclick = () => { cReq = $('#cReq').value.trim(); cPick = null; $('#cReqMsg').textContent = cReq ? 'Séance « ' + cReq + ' » en 3 niveaux ci-dessus.' : ''; drawProps(); coachAI(false); };
+$('#cReq').onkeydown = e => { if (e.key === 'Enter') $('#cReqBtn').click(); };
+
+/** Éditeur de la séance choisie : durées, répétitions, blocs en plus, demande en texte. */
+function drawEdit() {
+  const box = $('#cEdit'); if (!box) return;
+  if (!cPick) { box.innerHTML = ''; return; }
+  const s = cPick, date = coachDate(), isRest = s.sport === 'repos' || !s.steps;
+  const stepRow = (st, i) => st.repeat
+    ? `<div class="eblk"><div class="row sp"><span><b>${st.repeat} ×</b> ${esc(st.steps.map(x => (x.dist ? x.dist + ' m ' : '') + x.label).join(' + '))}</span><span class="stp"><button class="btn sm" data-rp="${i}" data-d="-1" aria-label="Une répétition de moins">−</button><button class="btn sm" data-rp="${i}" data-d="1" aria-label="Une répétition de plus">+</button><button class="btn sm" data-del="${i}" aria-label="Retirer">✕</button></span></div><div class="small mut">${esc(st.steps.map(x => x.cible).filter(Boolean).join(' · '))}</div></div>`
+    : `<div class="eblk"><div class="row sp"><span><b>${st.dist ? st.dist + ' m' : Math.round(st.min) + ' min'}</b> ${esc(st.label)}</span><span class="stp"><button class="btn sm" data-mn="${i}" data-d="-1" aria-label="Moins">−</button><button class="btn sm" data-mn="${i}" data-d="1" aria-label="Plus">+</button>${st.role === 'wu' || st.role === 'cd' ? '' : `<button class="btn sm" data-del="${i}" aria-label="Retirer">✕</button>`}</span></div>${st.cible ? `<div class="small mut">${esc(st.cible)}</div>` : ''}</div>`;
+  box.innerHTML = `<div class="card mine" style="margin-top:14px"><div class="row sp"><span class="mono">Ma séance</span><span class="small mut">${esc(NIVEAUX.find(n => n.k === s.niveau)?.nom || '')}</span></div>
+    <h3 style="margin:4px 0 2px">${esc(s.titre)}</h3><p class="small mut" style="margin:0 0 8px">${esc(s.duree_min || 0)} min${s.intensite ? ' · ' + esc(s.intensite) : ''}${s.quand ? ' · ' + esc(s.quand) : ''}</p>
+    ${isRest ? `<p class="small" style="white-space:pre-wrap">${esc(s.detail || '')}</p>` : `<div id="cBlocks">${s.steps.map(stepRow).join('')}</div>
+    <span class="mono" style="display:block;margin-top:10px">Ajouter</span><div class="chips" style="margin-top:6px">${[['gainage', 'Gainage 10 min'], ['accel', s.sport === 'bike' ? 'Sprints 4 × 15 s' : 'Accélérations 4 × 20 s'], ['educ', s.sport === 'swim' ? 'Éducatifs 4 × 50 m' : 'Gammes 8 min'], ['calme', 'Retour au calme +5 min'], ['etir', 'Étirements 10 min']].filter(([k]) => !(k === 'accel' && !['run', 'bike'].includes(s.sport))).map(([k, l]) => `<button class="chip" data-add="${k}">+ ${l}</button>`).join('')}</div>
+    <label for="cMod">Modifier en une phrase</label><div class="row"><input id="cMod" placeholder="Ex : raccourcis à 45 min · ajoute 2 séries · version piscine 25 m" style="flex:1 1 220px"><button class="btn sm" id="cModBtn">Modifier</button></div><p class="small mut" id="cModMsg" style="margin:6px 0 0"></p>`}
+    <div class="row" style="margin-top:12px;gap:8px"><button class="btn pri" id="cAdd">Ajouter à mon plan</button>${s.icu ? '<button class="btn" id="cWatchBtn">Montre ⌚</button>' : ''}${s.sport === 'run' ? '<button class="btn" id="cRun">Parcours 🗺️</button>' : ''}${s.sport === 'bike' && s.steps ? '<button class="btn" id="cZwo">Fichier .zwo</button>' : ''}<button class="btn" id="cCancel">Annuler</button></div>
+    <div id="cWatch" style="margin-top:10px"></div></div>`;
+  const upd = ns => { cPick = Object.assign(ns, { niveau: s.niveau, quand: s.quand, lieu: s.lieu }); drawEdit(); };
+  box.querySelectorAll('[data-rp]').forEach(b => b.onclick = () => { const n = JSON.parse(JSON.stringify(s)), st = n.steps[+b.dataset.rp]; st.repeat = Math.max(1, Math.min(30, st.repeat + +b.dataset.d)); upd(repack(n)); });
+  box.querySelectorAll('[data-mn]').forEach(b => b.onclick = () => { const n = JSON.parse(JSON.stringify(s)), st = n.steps[+b.dataset.mn], d = +b.dataset.d; if (st.dist) setStepMin(st, st.min * (st.dist + d * (st.dist >= 400 ? 100 : 50)) / st.dist); else setStepMin(st, Math.max(1, st.min + d * (st.min >= 20 ? 5 : st.min >= 6 ? 2 : 1))); upd(repack(n)); });
+  box.querySelectorAll('[data-del]').forEach(b => b.onclick = () => { const n = JSON.parse(JSON.stringify(s)); n.steps.splice(+b.dataset.del, 1); upd(repack(n)); });
+  box.querySelectorAll('[data-add]').forEach(b => b.onclick = () => upd(addExtra(s, b.dataset.add)));
+  const mb = $('#cModBtn'); if (mb) { $('#cMod').onkeydown = e => { if (e.key === 'Enter') mb.click(); }; mb.onclick = async () => {
+    const txt = $('#cMod').value.trim(); if (!txt) return; mb.disabled = true; $('#cModMsg').textContent = 'Le coach modifie ta séance…';
+    if (!aiOff) {
+      try {
+        const res = coachRules(date), r = await fn('coach-ai', { body: { task: 'modifier', facts: coachFacts(date, res, coachBase(res)), seance: { titre: s.titre, sport: s.sport, niveau: s.niveau, detail: s.detail }, demande: txt } });
+        const o = (r.seances || [])[0];
+        if (o) { upd(Object.assign(fromAI(o), { raisons: o.pourquoi })); $('#cModMsg').textContent = (r.analyse || 'Séance modifiée.') + ' (' + (IA_NOM[r.ia] || 'IA') + ')'; mb.disabled = false; return; }
+      } catch (e) { if (e.code === 'ia_non_configuree') aiOff = true; }
+    }
+    const r = editByText(s, txt);
+    if (r.done.length) { upd(r.s); $('#cModMsg').textContent = 'Fait : ' + r.done.join(', ') + '.'; }
+    else $('#cModMsg').textContent = 'Je n\'ai pas compris. Essaie « raccourcis à 40 min », « ajoute du gainage », « une série de plus », ou utilise les boutons + et −.';
+    const m2 = $('#cModBtn'); if (m2) m2.disabled = false;
+  }; }
+  $('#cAdd').onclick = () => addToPlan(cPick, date);
+  $('#cCancel').onclick = () => { cPick = null; drawProps(); };
+  const wb = $('#cWatchBtn'); if (wb) wb.onclick = () => watchBox($('#cWatch'), { titre: s.titre, icu: s.icu, type: s.icuType || 'Run', texte: s.detail }, date);
+  const rb = $('#cRun'); if (rb) rb.onclick = () => runDialog(s, date);
+  const zb = $('#cZwo'); if (zb) zb.onclick = () => shareFile('mon-coach-' + dkey(date) + '.zwo', toZwo(s), s.titre, 'application/xml');
 }
-async function pickProp(i, date) {
-  const o = propRes?.options[i]; if (!o) return;
+async function addToPlan(o, date) {
+  if (!o) return;
   const wk = dkey(monday(date)), di = (new Date(date).getDay() + 6) % 7;
-  let p = S.plan && S.plan.semaine === wk ? JSON.parse(JSON.stringify(S.plan)) : { semaine: wk, titre: 'Ma semaine', resume: 'Séances choisies au jour le jour.', jours: DAYS.map(d => ({ jour: d, seances: [] })), done: {}, source: 'propositions' };
+  let p = S.plan && S.plan.semaine === wk ? JSON.parse(JSON.stringify(S.plan)) : { semaine: wk, titre: 'Ma semaine', resume: 'Séances choisies au jour le jour.', jours: DAYS.map(d => ({ jour: d, seances: [] })), done: {}, source: 'propositions', _t: 1 };
   const j = dayOf(p, di); if (!p.jours.includes(j)) p.jours[di] = j;
   const keep = (j.seances || []).filter(s => s.fixe);
-  const s = Object.assign({}, o, { pourquoi: (o.raisons || []).join(' · '), choisie: true }); delete s.raisons; delete s.meteo;
+  const s = Object.assign({}, o, { quand: fixQuand(o.quand, o.duree_min), pourquoi: (o.raisons || []).join(' · ') || o.pourquoi || '', choisie: true }); delete s.raisons; delete s.meteo; delete s.pour;
   j.seances = o.sport === 'repos' ? (keep.length ? keep : [Object.assign(s, { duree_min: 0 })]) : keep.concat(s);
-  // les coches « faite » de ce jour ne correspondent plus
   Object.keys(p.done || {}).forEach(k => { if (k.startsWith(di + '_')) delete p.done[k]; });
-  await save('plan', p); renderAll(); pushSummary();
-  toast(o.sport === 'repos' ? 'Repos noté dans ton plan.' : 'Séance ajoutée à ton plan' + (propDay ? ' de demain.' : ' du jour.'));
+  await save('plan', p); cPick = null; renderAll(); pushSummary();
+  toast(o.sport === 'repos' ? 'Repos noté dans ton plan.' : 'Séance ajoutée à ton plan' + (propDay ? ' de demain.' : ' du jour : elle est sur l\'accueil.'));
 }
 
 /* ---------- course : parcours depuis la maison + séance pour la montre ---------- */
@@ -686,11 +800,12 @@ async function runGpx() {
   await shareFile(name.replace(/[^\w\- ]+/g, '').trim().replace(/ +/g, '_') + '.gpx', st.route.raw || gpx(name, st.route.coords), name);
 }
 /** Partage d'un fichier : feuille de partage Android (appli native), sinon partage ou téléchargement du navigateur. */
-async function shareFile(fname, text, title) {
+async function shareFile(fname, text, title, mime = 'application/gpx+xml') {
+  const zwo = /\.zwo$/.test(fname);
   if (isNative()) {
     try {
       const r = await Filesystem.writeFile({ path: fname, data: text, directory: Directory.Cache, encoding: Encoding.UTF8 });
-      await Share.share({ title, files: [r.uri], dialogTitle: 'Ouvrir avec COROS ou Garmin Connect' });
+      await Share.share({ title, files: [r.uri], dialogTitle: zwo ? 'Ouvrir avec Zwift, MyWhoosh…' : 'Ouvrir avec COROS ou Garmin Connect' });
       return;
     } catch (e) {
       if (/cancel/i.test(e.message || '')) return;
@@ -698,10 +813,10 @@ async function shareFile(fname, text, title) {
       toast('Mets à jour l\'appli Android pour envoyer le fichier directement.');
     }
   }
-  const file = new File([text], fname, { type: 'application/gpx+xml' });
+  const file = new File([text], fname, { type: mime });
   try { if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title }); return; } } catch (e) { if (e.name === 'AbortError') return; }
   const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = fname; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
-  toast('GPX téléchargé : importe-le dans l\'appli COROS (Parcours) ou Garmin Connect.');
+  toast(zwo ? 'Fichier .zwo téléchargé : mets-le dans Documents/Zwift/Workouts (ou importe-le dans MyWhoosh / TrainerRoad).' : 'GPX téléchargé : importe-le dans l\'appli COROS (Parcours) ou Garmin Connect.');
 }
 let icuState = null;
 /** Bloc « Envoyer sur ma montre » (intervals.icu → COROS / Garmin). w = { titre, icu, type, texte } */
@@ -1018,6 +1133,11 @@ function drawToday() {
   $('#helloT').textContent = p.prenom ? 'Salut ' + p.prenom : 'Aujourd\'hui'; $('#helloD').textContent = now.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
   const L = allEvents(), inf = dayInfo(now, L), nx = L.find(e => e.x && e.s > Date.now());
   $('#helloS').textContent = (inf.examens.length ? 'Jour d\'examen, on reste léger. ' : inf.veille_examen.length ? 'Veille d\'examen : rien de dur. ' : inf.charge === 'chargée' ? 'Grosse journée de cours. ' : '') + (nx ? 'Prochain examen ou compétition : ' + nx.t + ' le ' + new Date(nx.s).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' }) + '.' : '');
+  const races = findRaces(L, p).map(r => ({ ...r, j: Math.round((new Date(r.date + 'T00:00') - new Date(today() + 'T00:00')) / 864e5) }));
+  $('#raceCard').hidden = !races.length;
+  $('#raceBox').innerHTML = races.slice(0, 3).map(r => `<div class="race"><b class="j">${r.j === 0 ? 'Jour J' : r.j === 1 ? 'Demain' : 'J-' + r.j}</b><span>${esc(r.titre)}<br><span class="small mut">${esc(new Date(r.date + 'T12:00').toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' }))}${r.heure ? ' · ' + esc(r.heure) : ''}</span></span></div>`).join('');
+  const f = formeDuJour(), sc = f.score;
+  $('#homeForme').innerHTML = sc == null ? '<span class="small mut">Pas encore de données de forme aujourd\'hui. <a href="#suivi">Renseigne ton ressenti</a>.</span>' : `<b>${sc}/100</b> · ${sc >= 70 ? 'feu vert pour la séance prévue' : sc >= 45 ? 'séance prévue, sans forcer' : 'journée à alléger : très facile ou repos'}`;
   $('#todayEv').innerHTML = inf.ev.length ? inf.ev.map(evRow).join('') : '<p class="small mut">Rien dans ton agenda aujourd\'hui.</p>';
   const tsl = weekStatus(0).filter(x => x.date === today());
   if (tsl.length) $('#todayEv').innerHTML += tsl.map(x => { const [l, c] = ST_LBL[x.final]; return `<div class="ev"><time>${esc(x.slot.s)}–${esc(x.slot.e)}</time><span>${esc(x.slot.t)} <span class="badge ${c}">${l}</span><br><span class="small mut">${esc(x.why)}</span></span></div>`; }).join('');

@@ -47,9 +47,23 @@ jobs:
           STRAVA_CLIENT_ID: ${{ vars.STRAVA_CLIENT_ID || secrets.STRAVA_CLIENT_ID || '300740' }}
           STRAVA_CLIENT_SECRET: ${{ secrets.STRAVA_CLIENT_SECRET }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL }}
+          AI_DAILY_LIMIT: ${{ vars.AI_DAILY_LIMIT }}
+          CLAUDE_MONTHLY_USD: ${{ vars.CLAUDE_MONTHLY_USD }}
+          GEMINI_PRO_MONTHLY_USD: ${{ vars.GEMINI_PRO_MONTHLY_USD }}
+          GEMINI_PRO_MODEL: ${{ vars.GEMINI_PRO_MODEL }}
+          GROQ_MODEL: ${{ vars.GROQ_MODEL }}
         run: |
           args="STRAVA_CLIENT_ID=$STRAVA_CLIENT_ID STRAVA_CLIENT_SECRET=$STRAVA_CLIENT_SECRET"
           if [ -n "$GEMINI_API_KEY" ]; then args="$args GEMINI_API_KEY=$GEMINI_API_KEY"; fi
+          if [ -n "$GROQ_API_KEY" ]; then args="$args GROQ_API_KEY=$GROQ_API_KEY"; fi
+          if [ -n "$ANTHROPIC_API_KEY" ]; then args="$args ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY"; fi
+          if [ -n "$ANTHROPIC_MODEL" ]; then args="$args ANTHROPIC_MODEL=$ANTHROPIC_MODEL"; fi
+          for v in AI_DAILY_LIMIT CLAUDE_MONTHLY_USD GEMINI_PRO_MONTHLY_USD GEMINI_PRO_MODEL GROQ_MODEL; do
+            if [ -n "${!v}" ]; then args="$args $v=${!v}"; fi
+          done
           supabase secrets set --project-ref "$REF" --yes $args
       - name: Déployer les fonctions
         if: ${{ env.SUPABASE_ACCESS_TOKEN != '' }}
